@@ -143,16 +143,61 @@ class GlobalConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GlobalConfig":
-        merged = {**DEFAULT_GLOBAL_CONFIG, **(data or {})}
+        data = data or {}
+        scheduler = data.get("scheduler") or {}
+        paths = data.get("paths") or {}
+        flat_overrides = {k: v for k, v in data.items() if k not in {"scheduler", "paths"}}
+        merged = {**DEFAULT_GLOBAL_CONFIG, **flat_overrides}
+
+        log_dir = Path(
+            paths.get("log_directory")
+            or merged.get("log_dir", DEFAULT_GLOBAL_CONFIG["log_dir"])
+        )
+        data_dir = Path(
+            paths.get("data_directory")
+            or merged.get("data_dir", DEFAULT_GLOBAL_CONFIG["data_dir"])
+        )
+
+        handled_topics_path = Path(
+            merged.get("handled_topics_path")
+            or paths.get("handled_topics_file")
+            or data_dir / "handled_topics.json"
+        )
+        filter_output_path = Path(
+            merged.get("filter_output_path")
+            or paths.get("filter_output_file")
+            or data_dir / "topics_filtered.json"
+        )
+        filter_params_path = Path(
+            merged.get("filter_params_path")
+            or paths.get("filter_params_file")
+            or MAKER_ROOT / "config" / "filter_params.json"
+        )
+        runtime_status_path = Path(
+            merged.get("runtime_status_path")
+            or paths.get("run_state_file")
+            or data_dir / "autorun_status.json"
+        )
+
         return cls(
-            topics_poll_sec=float(merged.get("topics_poll_sec", cls.topics_poll_sec)),
-            command_poll_sec=float(merged.get("command_poll_sec", cls.command_poll_sec)),
-            max_concurrent_tasks=int(merged.get("max_concurrent_tasks", cls.max_concurrent_tasks)),
-            log_dir=Path(merged.get("log_dir", cls.log_dir)),
-            data_dir=Path(merged.get("data_dir", cls.data_dir)),
-            handled_topics_path=Path(merged.get("handled_topics_path", cls.handled_topics_path)),
-            filter_output_path=Path(merged.get("filter_output_path", cls.filter_output_path)),
-            filter_params_path=Path(merged.get("filter_params_path", cls.filter_params_path)),
+            topics_poll_sec=float(
+                scheduler.get("poll_interval_seconds")
+                or merged.get("topics_poll_sec", DEFAULT_GLOBAL_CONFIG["topics_poll_sec"])
+            ),
+            command_poll_sec=float(
+                merged.get("command_poll_sec", DEFAULT_GLOBAL_CONFIG["command_poll_sec"])
+            ),
+            max_concurrent_tasks=int(
+                scheduler.get("max_concurrent_jobs")
+                or merged.get(
+                    "max_concurrent_tasks", DEFAULT_GLOBAL_CONFIG["max_concurrent_tasks"]
+                )
+            ),
+            log_dir=log_dir,
+            data_dir=data_dir,
+            handled_topics_path=handled_topics_path,
+            filter_output_path=filter_output_path,
+            filter_params_path=filter_params_path,
             filter_timeout_sec=float(merged.get("filter_timeout_sec", cls.filter_timeout_sec)),
             filter_max_retries=int(merged.get("filter_max_retries", cls.filter_max_retries)),
             filter_retry_delay_sec=float(
@@ -169,9 +214,7 @@ class GlobalConfig:
                     "process_graceful_timeout_sec", cls.process_graceful_timeout_sec
                 )
             ),
-            runtime_status_path=Path(
-                merged.get("runtime_status_path", cls.runtime_status_path)
-            ),
+            runtime_status_path=runtime_status_path,
         )
 
     def ensure_dirs(self) -> None:
