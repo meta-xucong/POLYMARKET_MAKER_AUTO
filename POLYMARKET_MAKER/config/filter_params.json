@@ -8,6 +8,7 @@
   "skip_orderbook": false,
   "no_rest_backfill": false,
   "books_batch_size": 200,
+  "books_timeout_sec": 5.0,
   "only": "",
   "blacklist_terms": [
     "Bitcoin",
