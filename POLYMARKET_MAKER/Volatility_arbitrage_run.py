@@ -93,6 +93,12 @@ DEFAULT_RUN_CONFIG_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "config", "run_params.json"),
 )
 
+DEFAULT_DEADLINE_FALLBACK = {
+    "time": "12:59",
+    "timezone": "America/New_York",
+    "fallback_offset": -240,
+}
+
 def _enforce_request_rate_limit() -> None:
     global _last_request_ts
     with _request_lock:
@@ -498,6 +504,29 @@ def _get_zoneinfo_or_fallback(name: str, fallback_offset_minutes: int) -> timezo
     return timezone(timedelta(minutes=fallback_offset_minutes))
 
 
+def _parse_time_of_day_spec(spec: Dict[str, Any]) -> Tuple[int, int, int]:
+    hour = 0
+    minute = 0
+    second = 0
+
+    time_field = spec.get("time")
+    if isinstance(time_field, str):
+        m = re.match(r"\s*(\d{1,2})[:\.]?(\d{2})?(?:[:\.]?(\d{2}))?", time_field)
+        if m:
+            hour = int(m.group(1) or 0)
+            minute = int(m.group(2) or 0)
+            second = int(m.group(3) or 0)
+
+    hour = int(spec.get("hour", hour) or hour)
+    minute = int(spec.get("minute", minute) or minute)
+    second = int(spec.get("second", second) or second)
+
+    hour = max(0, min(23, hour))
+    minute = max(0, min(59, minute))
+    second = max(0, min(59, second))
+    return hour, minute, second
+
+
 def _apply_manual_deadline_override_meta(
     meta: Optional[Dict[str, Any]], override_ts: Optional[float]
 ) -> Dict[str, Any]:
@@ -608,6 +637,29 @@ def _prompt_common_deadline_override(
         f"{local_dt.isoformat()} ({spec['label']})，即 UTC {utc_dt.isoformat()}。",
     )
     return utc_dt.timestamp(), False
+
+
+def _default_deadline_ts(
+    base_date_utc: date,
+    default_spec: Optional[Dict[str, Any]],
+    tz_hint: Optional[Any],
+) -> Optional[float]:
+    spec: Dict[str, Any] = dict(DEFAULT_DEADLINE_FALLBACK)
+    if isinstance(default_spec, dict):
+        spec.update({k: v for k, v in default_spec.items() if v is not None})
+
+    hour, minute, second = _parse_time_of_day_spec(spec)
+    tz_name = spec.get("timezone") or tz_hint or DEFAULT_DEADLINE_FALLBACK["timezone"]
+    fallback_offset = int(_coerce_float(spec.get("fallback_offset")) or 0)
+    tzinfo = (
+        timezone.utc
+        if str(tz_name).upper() == "UTC"
+        else _get_zoneinfo_or_fallback(str(tz_name), fallback_offset)
+    )
+    dt_target = datetime.combine(
+        base_date_utc, dtime(hour=hour, minute=minute, second=second), tzinfo=tzinfo
+    )
+    return dt_target.astimezone(timezone.utc).timestamp()
 
 def _count_decimal_places(value: Any) -> Optional[int]:
     try:
@@ -1756,6 +1808,9 @@ def main(run_config: Optional[Dict[str, Any]] = None):
 
     market_deadline_ts = _calc_deadline(market_meta)
     deadline_policy = run_cfg.get("deadline_policy") if isinstance(run_cfg, dict) else {}
+    default_deadline_spec = (
+        deadline_policy.get("default_deadline") if isinstance(deadline_policy, dict) else None
+    )
     override_choice = None
     if isinstance(deadline_policy, dict):
         override_choice = deadline_policy.get("override_choice")
@@ -1769,6 +1824,35 @@ def main(run_config: Optional[Dict[str, Any]] = None):
     deadline_tz_hint = None
     if isinstance(deadline_policy, dict):
         deadline_tz_hint = deadline_policy.get("timezone")
+
+    def _apply_default_deadline(reason: str) -> None:
+        nonlocal market_meta, market_deadline_ts, manual_deadline_override_ts
+
+        base_ts: Optional[float] = market_deadline_ts
+        if base_ts is None and isinstance(market_meta, dict):
+            for key in ("end_ts", "resolved_ts"):
+                cand = _coerce_float(market_meta.get(key))
+                if cand is not None:
+                    base_ts = cand
+                    break
+        base_date = (
+            datetime.fromtimestamp(base_ts, tz=timezone.utc).date()
+            if base_ts
+            else datetime.now(tz=timezone.utc).date()
+        )
+        tz_pref = deadline_tz_hint or tz_hint or timezone_override_hint
+        fallback_ts = _default_deadline_ts(base_date, default_deadline_spec, tz_pref)
+        if fallback_ts is None:
+            return
+        manual_deadline_override_ts = fallback_ts
+        market_meta = _apply_manual_deadline_override_meta(market_meta, fallback_ts)
+        market_deadline_ts = _calc_deadline(market_meta)
+        local_tz = _timezone_from_hint(tz_pref) or timezone.utc
+        local_dt = datetime.fromtimestamp(fallback_ts, tz=local_tz)
+        print(
+            f"[WARN] {reason}，已按默认配置设置截止时间为 {local_dt.isoformat()} ({tz_pref or 'UTC'})。"
+        )
+
     if manual_deadline_disabled:
         market_meta = dict(market_meta or {})
         market_meta.pop("end_ts", None)
@@ -1796,6 +1880,11 @@ def main(run_config: Optional[Dict[str, Any]] = None):
             market_meta.pop("end_ts", None)
             market_meta.pop("resolved_ts", None)
             market_deadline_ts = None
+
+    if not manual_deadline_disabled and _should_offer_common_deadline_options(market_meta):
+        _apply_default_deadline("自动获取的截止日期缺少具体时刻")
+    if not manual_deadline_disabled and not market_deadline_ts:
+        _apply_default_deadline("未能自动获取市场结束时间")
     if market_deadline_ts:
         dt_deadline = datetime.fromtimestamp(market_deadline_ts, tz=timezone.utc)
         print(
@@ -1900,7 +1989,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         )
         used_minutes = False
         if countdown_in is None:
-            countdown_in = countdown_cfg.get("minutes_before_end")
+            countdown_in = countdown_cfg.get("minutes_before_end", 300)
             used_minutes = countdown_in is not None
         if countdown_in is not None:
             parsed_ts: Optional[float] = None

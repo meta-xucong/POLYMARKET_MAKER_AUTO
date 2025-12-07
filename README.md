@@ -46,7 +46,7 @@
   - 调度与超时：`scheduler.max_concurrent_jobs`、`scheduler.poll_interval_seconds`、`scheduler.task_timeout_seconds`。
   - 路径：`paths.log_directory`、`paths.data_directory`、`paths.order_history_file`、`paths.run_state_file`。
   - 重试与监控：`retry_strategy.*` 与 `monitoring.*` 字段提供指数退避与健康检查周期的示例。
-- **筛选参数（filter_params.json）**：结束时间窗口、是否跳过订单簿、允许非流动性市场等开关，以及高亮条件（`highlight.max_hours`、`highlight.ask_min`、`highlight.max_ask_diff` 等）。
+- **筛选参数（filter_params.json）**：结束时间窗口、是否跳过订单簿、允许非流动性市场、可配置黑名单词条，以及高亮条件（`highlight.max_hours`、`highlight.ask_min`、`highlight.max_ask_diff` 等）。
 - **策略模板（strategy_defaults.json）**：`default` 段定义最小优势、下单量、点差目标、刷新周期等，`topics` 段可按话题 ID/名称覆盖。
 - **单市场运行参数（run_params.json）**：`market_url`、`side`、下单大小策略、跌幅/盈利阈值、倒计时配置等。
 - **交易执行参数（trading.yaml）**：下单切片区间、重试次数、价格让步步长、订单轮询频率与最小报价金额。
