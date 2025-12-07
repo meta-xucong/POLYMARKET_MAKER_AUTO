@@ -248,6 +248,7 @@ class TopicTask:
     process: Optional[subprocess.Popen] = None
     log_path: Optional[Path] = None
     config_path: Optional[Path] = None
+    log_excerpt: str = ""
 
     def heartbeat(self, message: str) -> None:
         self.last_heartbeat = time.time()
@@ -274,35 +275,27 @@ class AutoRunManager:
         self.topic_details: Dict[str, Dict[str, Any]] = {}
         self.handled_topics: set[str] = set()
         self.pending_topics: List[str] = []
+        self._next_topics_refresh: float = 0.0
+        self._next_status_dump: float = 0.0
 
     # ========== 核心循环 ==========
     def run_loop(self) -> None:
         self.config.ensure_dirs()
         self._load_handled_topics()
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
-        self._refresh_topics()
         while not self.stop_event.is_set():
+            now = time.time()
             self._process_commands()
-            self._tick_once()
-            time.sleep(self.config.topics_poll_sec)
+            self._poll_tasks()
+            self._schedule_pending_topics()
+            if now >= self._next_topics_refresh:
+                self._refresh_topics()
+                self._next_topics_refresh = now + self.config.topics_poll_sec
+            if now >= self._next_status_dump:
+                self._print_status()
+                self._next_status_dump = now + max(5.0, self.config.command_poll_sec)
+            time.sleep(self.config.command_poll_sec)
         print("[DONE] autorun stopped")
-
-    def _tick_once(self) -> None:
-        self._poll_tasks()
-        self._schedule_pending_topics()
-        for topic_id, task in list(self.tasks.items()):
-            status = task.status
-            note = task.notes[-1] if task.notes else "idle"
-            print(f"[RUN] topic={topic_id} status={status} last_note={note}")
-
-        if self.latest_topics:
-            topics_preview = ", ".join(
-                [_topic_id_from_entry(t) for t in self.latest_topics[:5]]
-            )
-            print(
-                f"[FILTER] 当前筛选话题数={len(self.latest_topics)} "
-                f"preview={topics_preview}"
-            )
 
     def _poll_tasks(self) -> None:
         for task in list(self.tasks.values()):
@@ -313,10 +306,27 @@ class AutoRunManager:
             if rc is None:
                 task.status = "running"
                 task.last_heartbeat = time.time()
+                self._update_log_excerpt(task)
                 continue
             if task.status not in {"stopped", "exited", "error"}:
                 task.status = "exited" if rc == 0 else "error"
             task.heartbeat(f"process finished rc={rc}")
+            self._update_log_excerpt(task)
+
+    def _update_log_excerpt(self, task: TopicTask, max_bytes: int = 2000) -> None:
+        if not task.log_path or not task.log_path.exists():
+            task.log_excerpt = ""
+            return
+        try:
+            with task.log_path.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - max_bytes))
+                data = f.read().decode("utf-8", errors="ignore")
+            lines = data.strip().splitlines()
+            task.log_excerpt = "\n".join(lines[-5:])
+        except OSError as exc:  # pragma: no cover - 文件访问异常
+            task.log_excerpt = f"<log read error: {exc}>"
 
     def _schedule_pending_topics(self) -> None:
         running = sum(1 for t in self.tasks.values() if t.is_running())
@@ -449,11 +459,12 @@ class AutoRunManager:
             hb_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hb)) if hb else "-"
             pid_text = str(task.process.pid) if task.process else "-"
             log_name = task.log_path.name if task.log_path else "-"
+            log_hint = (task.log_excerpt.splitlines() or ["-"])[-1].strip()
             print(
                 f"[RUN] topic={topic_id} status={task.status} "
                 f"start={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task.start_time))} "
                 f"pid={pid_text} hb={hb_text} notes={len(task.notes)} "
-                f"log={log_name}"
+                f"log={log_name} last_line={log_hint or '-'}"
             )
 
     def _stop_topic(self, topic_id: str) -> None:
@@ -543,6 +554,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="禁用交互式命令循环，仅按配置运行",
     )
+    parser.add_argument(
+        "--command",
+        action="append",
+        help="启动后自动执行的命令（可多次提供），例如 list 或 stop <topic_id>",
+    )
     return parser.parse_args(argv)
 
 
@@ -609,7 +625,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     worker = threading.Thread(target=manager.run_loop, daemon=True)
     worker.start()
 
-    if args.no_repl:
+    if args.command:
+        for cmd in args.command:
+            manager.enqueue_command(cmd)
+
+    if args.no_repl or args.command:
         try:
             while worker.is_alive():
                 time.sleep(global_conf.command_poll_sec)
