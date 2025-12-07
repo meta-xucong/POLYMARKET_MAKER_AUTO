@@ -860,6 +860,15 @@ def run_filter_once(
                 )
                 result = future.result(timeout=timeout_sec)
             break
+        except concurrent.futures.TimeoutError as exc:  # pragma: no cover - 线程超时
+            print(
+                "[WARN] 筛选调用超时（{}s 内未返回，通常为 Gamma/clob 接口无响应或窗口过大）".format(
+                    timeout_sec
+                )
+            )
+            if attempt >= attempts:
+                raise
+            time.sleep(retry_delay_sec)
         except Exception as exc:  # pragma: no cover - 网络/线程异常
             print(
                 f"[WARN] 筛选调用失败（尝试 {attempt}/{attempts}，timeout={timeout_sec}s）: {exc}"
