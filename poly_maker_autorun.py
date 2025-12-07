@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -369,18 +370,25 @@ class AutoRunManager:
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
         try:
             while not self.stop_event.is_set():
-                now = time.time()
-                self._process_commands()
-                self._poll_tasks()
-                self._schedule_pending_topics()
-                if now >= self._next_topics_refresh:
-                    self._refresh_topics()
-                    self._next_topics_refresh = now + self.config.topics_poll_sec
-                if now >= self._next_status_dump:
-                    self._print_status()
-                    self._dump_runtime_status()
-                    self._next_status_dump = now + max(5.0, self.config.command_poll_sec)
-                time.sleep(self.config.command_poll_sec)
+                try:
+                    now = time.time()
+                    self._process_commands()
+                    self._poll_tasks()
+                    self._schedule_pending_topics()
+                    if now >= self._next_topics_refresh:
+                        self._refresh_topics()
+                        self._next_topics_refresh = now + self.config.topics_poll_sec
+                    if now >= self._next_status_dump:
+                        self._print_status()
+                        self._dump_runtime_status()
+                        self._next_status_dump = now + max(
+                            5.0, self.config.command_poll_sec
+                        )
+                    time.sleep(self.config.command_poll_sec)
+                except Exception as exc:  # pragma: no cover - 防御性保护
+                    print(f"[ERROR] 主循环异常已捕获，将继续运行: {exc}")
+                    traceback.print_exc()
+                    time.sleep(max(1.0, self.config.command_poll_sec))
         finally:
             self._cleanup_all_tasks()
             self._dump_runtime_status()
@@ -445,7 +453,12 @@ class AutoRunManager:
             topic_id = self.pending_topics.pop(0)
             if topic_id in self.tasks and self.tasks[topic_id].is_running():
                 continue
-            started = self._start_topic_process(topic_id)
+            try:
+                started = self._start_topic_process(topic_id)
+            except Exception as exc:  # pragma: no cover - 防御性保护
+                print(f"[ERROR] 调度话题 {topic_id} 时异常: {exc}")
+                traceback.print_exc()
+                started = False
             if not started and topic_id not in self.pending_topics:
                 # 启动失败时重新入队，避免话题被遗忘
                 self.pending_topics.append(topic_id)
@@ -485,7 +498,7 @@ class AutoRunManager:
             log_file = log_path.open("a", encoding="utf-8")
         except OSError as exc:  # pragma: no cover - 文件系统异常
             print(f"[ERROR] 无法创建日志文件 {log_path}: {exc}")
-            return
+            return False
 
         cmd = [
             sys.executable,
