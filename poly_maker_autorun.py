@@ -424,7 +424,10 @@ class AutoRunManager:
             topic_id = self.pending_topics.pop(0)
             if topic_id in self.tasks and self.tasks[topic_id].is_running():
                 continue
-            self._start_topic_process(topic_id)
+            started = self._start_topic_process(topic_id)
+            if not started and topic_id not in self.pending_topics:
+                # 启动失败时重新入队，避免话题被遗忘
+                self.pending_topics.append(topic_id)
             running = sum(1 for t in self.tasks.values() if t.is_running())
 
     def _build_run_config(self, topic_id: str) -> Dict[str, Any]:
@@ -450,7 +453,7 @@ class AutoRunManager:
             merged.setdefault("end_time", topic_info.get("end_time"))
         return merged
 
-    def _start_topic_process(self, topic_id: str) -> None:
+    def _start_topic_process(self, topic_id: str) -> bool:
         config_data = self._build_run_config(topic_id)
         cfg_path = self.config.data_dir / f"run_params_{_safe_topic_filename(topic_id)}.json"
         _dump_json_file(cfg_path, config_data)
@@ -485,8 +488,15 @@ class AutoRunManager:
                 )
                 if attempt >= attempts:
                     log_file.close()
-                    return
+                    return False
                 time.sleep(self.config.process_retry_delay_sec)
+
+        if not proc or proc.poll() is not None:
+            rc_text = proc.poll() if proc else "?"
+            print(
+                f"[ERROR] topic={topic_id} 启动后立即退出 rc={rc_text}，将重试"
+            )
+            return False
 
         task = self.tasks.get(topic_id) or TopicTask(topic_id=topic_id)
         task.process = proc
@@ -495,7 +505,9 @@ class AutoRunManager:
         task.status = "running"
         task.heartbeat("started")
         self.tasks[topic_id] = task
+        self._update_handled_topics([topic_id])
         print(f"[START] topic={topic_id} pid={proc.pid} log={log_path}")
+        return True
 
     # ========== 历史记录 ==========
     def _load_handled_topics(self) -> None:
@@ -608,7 +620,6 @@ class AutoRunManager:
                 print(
                     f"[INCR] 新话题 {len(new_topics)} 个，将更新历史记录 preview={preview}"
                 )
-                self._update_handled_topics(new_topics)
                 for topic_id in new_topics:
                     if topic_id in self.pending_topics:
                         continue
