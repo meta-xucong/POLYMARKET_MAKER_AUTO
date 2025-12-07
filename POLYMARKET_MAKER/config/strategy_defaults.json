@@ -1,11 +1,11 @@
 {
   "default": {
     "min_edge": 0.02,
-    "max_position_per_market": 500.0,
-    "order_size": 50.0,
+    "max_position_per_market": 20.0,
+    "order_size": 20.0,
     "spread_target": 0.01,
     "refresh_interval_seconds": 10,
-    "max_open_orders": 10
+    "max_open_orders": 20
   },
   "topics": {
     "election_2024": {
