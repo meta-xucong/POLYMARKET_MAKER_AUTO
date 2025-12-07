@@ -1,0 +1,35 @@
+{
+  "market_url": "https://polymarket.com/market/btc-updown-15m-1765152000",
+  "timezone": "America/New_York",
+  "deadline_override_ts": null,
+  "disable_deadline_checks": false,
+  "deadline_policy": {
+    "override_choice": null,
+    "disable_deadline": false,
+    "timezone": "America/New_York",
+    "default_deadline": {
+      "time": "12:59",
+      "timezone": "America/New_York"
+    }
+  },
+  "side": null,
+  "order_size": null,
+  "order_size_is_target": true,
+  "sell_mode": "aggressive",
+  "buy_price_threshold": null,
+  "drop_window_minutes": 60,
+  "drop_pct": 0.001,
+  "profit_pct": 0.005,
+  "enable_incremental_drop_pct": true,
+  "incremental_drop_pct_step": 0.0002,
+  "countdown": {
+    "minutes_before_end": 300,
+    "absolute_time": null,
+    "timezone": null
+  },
+  "topic_id": "btc-updown-15m-1765152000",
+  "topic_name": "Bitcoin Up or Down - December 7, 7:00PM-7:15PM ET",
+  "yes_token": "101209683885415680306441505752492117212283248204152618958831518845012651814249",
+  "no_token": "11357012935958595931969093866737769837099198628670856585508881544910627344755",
+  "end_time": "2025-12-08T00:15:00+00:00"
+}
