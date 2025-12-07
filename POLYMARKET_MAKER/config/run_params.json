@@ -1,5 +1,5 @@
 {
-  "market_url": "https://polymarket.com/market/example-slug",
+  "market_url": null,
   "timezone": "America/New_York",
   "deadline_override_ts": null,
   "disable_deadline_checks": false,
@@ -8,7 +8,7 @@
     "disable_deadline": false,
     "timezone": null
   },
-  "side": "YES",
+  "side": null,
   "order_size": null,
   "order_size_is_target": true,
   "sell_mode": "aggressive",
