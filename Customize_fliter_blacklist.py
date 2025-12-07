@@ -42,22 +42,6 @@ HIGHLIGHT_MAX_ASK_DIFF: float = 0.10         # 同一 token 点差 |ask - bid| �
 
 
 # -------------------------------
-# （可选）REST 客户端，仅用于打印 API key 前缀（非必需）
-# -------------------------------
-
-def _import_rest_client():
-    try:
-        from Volatility_arbitrage_main_rest_EOA import get_client as _get_client
-        return _get_client
-    except Exception as e:
-        print(f"[WARN] 无法加载 REST 客户端：{e}", file=sys.stderr)
-        def _noop():
-            return None
-        return _noop
-
-get_rest_client = _import_rest_client()
-
-# -------------------------------
 # 小工具
 # -------------------------------
 
@@ -639,9 +623,13 @@ def collect_filter_results(
     no_rest_backfill: bool = False,
     books_batch_size: int = 200,
     only: str = "",
+    blacklist_terms: Optional[Iterable[str]] = None,
     prefetched_markets: Optional[List[Dict[str, Any]]] = None,
 ) -> FilterResult:
     """执行一次筛选流程并返回结构化结果。"""
+
+    if blacklist_terms is not None:
+        set_blacklist_terms(blacklist_terms)
 
     if prefetched_markets is None:
         now = _now_utc()
@@ -769,20 +757,6 @@ def main():
         HIGHLIGHT_MIN_TOTAL_VOLUME = args.hl_min_total_volume
     if args.hl_max_ask_diff is not None:
         HIGHLIGHT_MAX_ASK_DIFF = args.hl_max_ask_diff
-
-    # 仅用于展示 API key 前缀
-    try:
-        getc = get_rest_client
-        rest_client = getc() if callable(getc) else None
-        api_creds = getattr(rest_client, "api_creds", None)
-        def g(x,k):
-            if isinstance(x, dict): return x.get(k)
-            return getattr(x,k,None)
-        ak = g(api_creds, "api_key")
-        if ak:
-            print(f"[INFO] 已加载 EOA API credentials：{ak[:6]}***{ak[-4:]}")
-    except Exception:
-        pass
 
     # 仅抓未来盘：时间窗口 = [now + min_end_hours, now + max_end_days]
     now = _now_utc()
