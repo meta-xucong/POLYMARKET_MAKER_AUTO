@@ -2,7 +2,7 @@
 
 ## 背景与目标
 - 将 `Customize_fliter_blacklist.py` 的话题筛选能力与 `POLYMARKET_MAKER/Volatility_arbitrage_run.py` 的挂单波段交易组合成一体化自动运行流程。
-- 新建入口脚本 `poly_maker_autorun.py`，无需交互式输入，支持多话题并发、状态监控、单话题停止，以及新旧话题增量识别。
+- 新建位于仓库根目录的入口脚本 `poly_maker_autorun.py`，无需交互式输入，支持多话题并发、状态监控、单话题停止，以及新旧话题增量识别；核心挂单逻辑仍集中在 `POLYMARKET_MAKER/` 目录内。
 
 ## 功能性需求
 1. **入口脚本**：运行后自动执行筛选脚本，解析出符合条件的话题列表；为每个新话题按预设参数启动波段交易脚本。
