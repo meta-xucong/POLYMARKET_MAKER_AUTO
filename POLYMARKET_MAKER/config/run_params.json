@@ -6,7 +6,11 @@
   "deadline_policy": {
     "override_choice": null,
     "disable_deadline": false,
-    "timezone": null
+    "timezone": "America/New_York",
+    "default_deadline": {
+      "time": "12:59",
+      "timezone": "America/New_York"
+    }
   },
   "side": null,
   "order_size": null,

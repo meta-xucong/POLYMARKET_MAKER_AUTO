@@ -276,6 +276,9 @@ class FilterConfig:
     no_rest_backfill: bool = False
     books_batch_size: int = 200
     only: str = ""
+    blacklist_terms: List[str] = field(
+        default_factory=lambda: list(filter_script.DEFAULT_BLACKLIST_TERMS)
+    )
     highlight: HighlightConfig = field(default_factory=HighlightConfig)
 
     @classmethod
@@ -293,6 +296,11 @@ class FilterConfig:
             no_rest_backfill=bool(data.get("no_rest_backfill", cls.no_rest_backfill)),
             books_batch_size=int(data.get("books_batch_size", cls.books_batch_size)),
             only=str(data.get("only", cls.only)),
+            blacklist_terms=[
+                str(t).strip()
+                for t in data.get("blacklist_terms", filter_script.DEFAULT_BLACKLIST_TERMS)
+                if str(t).strip()
+            ],
             highlight=highlight_conf,
         )
 
@@ -308,6 +316,7 @@ class FilterConfig:
             "no_rest_backfill": self.no_rest_backfill,
             "books_batch_size": self.books_batch_size,
             "only": self.only,
+            "blacklist_terms": self.blacklist_terms,
         }
 
     def to_dict(self) -> Dict[str, Any]:
@@ -318,6 +327,9 @@ class FilterConfig:
 
     def apply_highlight(self) -> None:
         self.highlight.apply_to_filter()
+
+    def apply_blacklist(self) -> None:
+        filter_script.set_blacklist_terms(self.blacklist_terms)
 
 
 @dataclass
@@ -836,6 +848,7 @@ def run_filter_once(
 ) -> List[Dict[str, Any]]:
     """调用筛选脚本，落盘 JSON，并返回话题列表，带超时与可选重试。"""
 
+    filter_conf.apply_blacklist()
     filter_conf.apply_highlight()
 
     attempts = max(1, int(max_retries) + 1)
