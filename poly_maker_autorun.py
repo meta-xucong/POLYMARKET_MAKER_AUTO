@@ -347,10 +347,12 @@ class AutoRunManager:
         global_config: GlobalConfig,
         strategy_defaults: Dict[str, Any],
         filter_config: FilterConfig,
+        run_params_template: Dict[str, Any],
     ):
         self.config = global_config
         self.strategy_defaults = strategy_defaults
         self.filter_config = filter_config
+        self.run_params_template = run_params_template or {}
         self.stop_event = threading.Event()
         self.command_queue: "queue.Queue[str]" = queue.Queue()
         self.tasks: Dict[str, TopicTask] = {}
@@ -465,11 +467,12 @@ class AutoRunManager:
             running = sum(1 for t in self.tasks.values() if t.is_running())
 
     def _build_run_config(self, topic_id: str) -> Dict[str, Any]:
+        base_template = json.loads(json.dumps(self.run_params_template or {}))
         base = self.strategy_defaults.get("default", {}) or {}
         topic_overrides = (self.strategy_defaults.get("topics") or {}).get(
             topic_id, {}
         )
-        merged = {**base, **topic_overrides}
+        merged = {**base_template, **base, **topic_overrides}
 
         topic_info = self.topic_details.get(topic_id, {})
         merged.setdefault(
@@ -782,6 +785,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="筛选参数配置 JSON 路径",
     )
     parser.add_argument(
+        "--run-config-template",
+        type=Path,
+        default=MAKER_ROOT / "config" / "run_params.json",
+        help="运行参数模板 JSON 路径（传递给 Volatility_arbitrage_run.py）",
+    )
+    parser.add_argument(
         "--no-repl",
         action="store_true",
         help="禁用交互式命令循环，仅按配置运行",
@@ -796,14 +805,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def load_configs(
     args: argparse.Namespace,
-) -> tuple[GlobalConfig, Dict[str, Any], FilterConfig]:
+) -> tuple[GlobalConfig, Dict[str, Any], FilterConfig, Dict[str, Any]]:
     global_conf_raw = _load_json_file(args.global_config)
     strategy_conf_raw = _load_json_file(args.strategy_config)
     filter_conf_raw = _load_json_file(args.filter_config)
+    run_params_template = _load_json_file(args.run_config_template)
     return (
         GlobalConfig.from_dict(global_conf_raw),
         strategy_conf_raw,
         FilterConfig.from_dict(filter_conf_raw),
+        run_params_template,
     )
 
 
@@ -867,9 +878,9 @@ def run_filter_once(
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-    global_conf, strategy_conf, filter_conf = load_configs(args)
+    global_conf, strategy_conf, filter_conf, run_params_template = load_configs(args)
 
-    manager = AutoRunManager(global_conf, strategy_conf, filter_conf)
+    manager = AutoRunManager(global_conf, strategy_conf, filter_conf, run_params_template)
 
     def _handle_sigterm(signum: int, frame: Any) -> None:  # pragma: no cover - 信号处理不可测
         print(f"\n[WARN] signal {signum} received, exiting...")
