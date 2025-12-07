@@ -1,5 +1,5 @@
 {
-  "min_end_hours": 1.0,
+  "min_end_hours": 5.0,
   "max_end_days": 2,
   "gamma_window_days": 2,
   "gamma_min_window_hours": 1,
