@@ -7,8 +7,7 @@
 - `poly_maker_autorun.py`：自动化主控脚本，负责筛选、增量识别、任务调度与命令控制。
 - `Customize_fliter_blacklist.py`：REST-only 市场筛选脚本，支持高亮参数与流式输出。
 - `POLYMARKET_MAKER/config/`：调度、筛选与策略配置示例（`global_config.json`、`filter_params.json`、`strategy_defaults.json`、`run_params.json`、`trading.yaml`）。
-- `POLYMARKET_MAKER/data/`：运行时生成的数据目录（筛选结果、已处理话题、运行状态等）。
-- `POLYMARKET_MAKER/logs/`：运行日志目录，`poly_maker_autorun.py` 默认写入 `logs/autorun/` 下的独立文件。
+- `POLYMARKET_MAKER/logs/`：运行时数据与日志目录（筛选结果、去重状态、运行快照、子任务日志等，示例配置均指向此处）。
 
 ## 环境准备
 1. 安装 Python 3.10+。
@@ -52,10 +51,10 @@
 - **交易执行参数（trading.yaml）**：下单切片区间、重试次数、价格让步步长、订单轮询频率与最小报价金额。
 
 ## 日志与数据产物
-`poly_maker_autorun.py` 会按照全局配置落盘：
-- 筛选结果：`POLYMARKET_MAKER/data/topics_filtered.json`（最新筛选详情与话题列表）。
-- 历史去重：`POLYMARKET_MAKER/data/handled_topics.json`（已处理话题 ID 集合）。
-- 运行快照：`POLYMARKET_MAKER/data/autorun_status.json`（任务状态、PID、日志路径）。
+`poly_maker_autorun.py` 会按照全局配置落盘（示例配置将所有文件集中在 `POLYMARKET_MAKER/logs/` 下）：
+- 筛选结果：`POLYMARKET_MAKER/logs/topics_filtered.json`（最新筛选详情与话题列表）。
+- 历史去重：`POLYMARKET_MAKER/logs/handled_topics.json`（已处理话题 ID 集合）。
+- 运行快照：`POLYMARKET_MAKER/logs/run_state.json`（任务状态、PID、日志路径）。
 - 子任务日志：`POLYMARKET_MAKER/logs/autorun/<topic_id>.log`（每个话题独立日志，文件名中的斜杠会被替换为下划线）。
 
 ## 独立运行市场筛选脚本
