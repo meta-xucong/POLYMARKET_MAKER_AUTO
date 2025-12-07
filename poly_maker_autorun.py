@@ -11,6 +11,8 @@ import argparse
 import json
 import queue
 import signal
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +37,20 @@ DEFAULT_GLOBAL_CONFIG = {
     "filter_output_path": str(MAKER_ROOT / "data" / "topics_filtered.json"),
     "filter_params_path": str(MAKER_ROOT / "config" / "filter_params.json"),
 }
+
+
+def _topic_id_from_entry(entry: Any) -> str:
+    """从筛选结果条目中提取 topic_id/slug，兼容字符串或 dict。"""
+
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return str(entry.get("slug") or entry.get("topic_id") or "").strip()
+    return str(entry).strip()
+
+
+def _safe_topic_filename(topic_id: str) -> str:
+    return topic_id.replace("/", "_").replace("\\", "_")
 
 
 def _load_json_file(path: Path) -> Dict[str, Any]:
@@ -78,10 +94,15 @@ def write_handled_topics(path: Path, topics: set[str]) -> None:
     _dump_json_file(path, payload)
 
 
-def compute_new_topics(latest: List[str], handled: set[str]) -> List[str]:
+def compute_new_topics(latest: List[Any], handled: set[str]) -> List[str]:
     """从最新筛选结果中筛出尚未处理的话题列表。"""
 
-    return [topic for topic in latest if topic not in handled]
+    result: List[str] = []
+    for entry in latest:
+        topic_id = _topic_id_from_entry(entry)
+        if topic_id and topic_id not in handled:
+            result.append(topic_id)
+    return result
 
 
 @dataclass
@@ -224,10 +245,16 @@ class TopicTask:
     start_time: float = field(default_factory=time.time)
     last_heartbeat: Optional[float] = None
     notes: List[str] = field(default_factory=list)
+    process: Optional[subprocess.Popen] = None
+    log_path: Optional[Path] = None
+    config_path: Optional[Path] = None
 
     def heartbeat(self, message: str) -> None:
         self.last_heartbeat = time.time()
         self.notes.append(message)
+
+    def is_running(self) -> bool:
+        return bool(self.process) and (self.process.poll() is None)
 
 
 class AutoRunManager:
@@ -243,8 +270,10 @@ class AutoRunManager:
         self.stop_event = threading.Event()
         self.command_queue: "queue.Queue[str]" = queue.Queue()
         self.tasks: Dict[str, TopicTask] = {}
-        self.latest_topics: List[str] = []
+        self.latest_topics: List[Dict[str, Any]] = []
+        self.topic_details: Dict[str, Dict[str, Any]] = {}
         self.handled_topics: set[str] = set()
+        self.pending_topics: List[str] = []
 
     # ========== 核心循环 ==========
     def run_loop(self) -> None:
@@ -259,18 +288,109 @@ class AutoRunManager:
         print("[DONE] autorun stopped")
 
     def _tick_once(self) -> None:
-        """占位：后续补充筛选、调度、心跳等逻辑。"""
+        self._poll_tasks()
+        self._schedule_pending_topics()
         for topic_id, task in list(self.tasks.items()):
             status = task.status
             note = task.notes[-1] if task.notes else "idle"
             print(f"[RUN] topic={topic_id} status={status} last_note={note}")
 
         if self.latest_topics:
-            topics_preview = ", ".join(self.latest_topics[:5])
+            topics_preview = ", ".join(
+                [_topic_id_from_entry(t) for t in self.latest_topics[:5]]
+            )
             print(
                 f"[FILTER] 当前筛选话题数={len(self.latest_topics)} "
                 f"preview={topics_preview}"
             )
+
+    def _poll_tasks(self) -> None:
+        for task in list(self.tasks.values()):
+            proc = task.process
+            if not proc:
+                continue
+            rc = proc.poll()
+            if rc is None:
+                task.status = "running"
+                task.last_heartbeat = time.time()
+                continue
+            if task.status not in {"stopped", "exited", "error"}:
+                task.status = "exited" if rc == 0 else "error"
+            task.heartbeat(f"process finished rc={rc}")
+
+    def _schedule_pending_topics(self) -> None:
+        running = sum(1 for t in self.tasks.values() if t.is_running())
+        while (
+            self.pending_topics
+            and running < max(1, int(self.config.max_concurrent_tasks))
+        ):
+            topic_id = self.pending_topics.pop(0)
+            if topic_id in self.tasks and self.tasks[topic_id].is_running():
+                continue
+            self._start_topic_process(topic_id)
+            running = sum(1 for t in self.tasks.values() if t.is_running())
+
+    def _build_run_config(self, topic_id: str) -> Dict[str, Any]:
+        base = self.strategy_defaults.get("default", {}) or {}
+        topic_overrides = (self.strategy_defaults.get("topics") or {}).get(
+            topic_id, {}
+        )
+        merged = {**base, **topic_overrides}
+
+        topic_info = self.topic_details.get(topic_id, {})
+        merged.setdefault(
+            "market_url",
+            f"https://polymarket.com/market/{topic_id}",
+        )
+        merged.setdefault("topic_id", topic_id)
+        if topic_info.get("title"):
+            merged.setdefault("topic_name", topic_info.get("title"))
+        if topic_info.get("yes_token"):
+            merged.setdefault("yes_token", topic_info.get("yes_token"))
+        if topic_info.get("no_token"):
+            merged.setdefault("no_token", topic_info.get("no_token"))
+        if topic_info.get("end_time"):
+            merged.setdefault("end_time", topic_info.get("end_time"))
+        return merged
+
+    def _start_topic_process(self, topic_id: str) -> None:
+        config_data = self._build_run_config(topic_id)
+        cfg_path = self.config.data_dir / f"run_params_{_safe_topic_filename(topic_id)}.json"
+        _dump_json_file(cfg_path, config_data)
+
+        log_path = self.config.log_dir / f"autorun_{_safe_topic_filename(topic_id)}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            log_file = log_path.open("a", encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - 文件系统异常
+            print(f"[ERROR] 无法创建日志文件 {log_path}: {exc}")
+            return
+
+        cmd = [
+            sys.executable,
+            str(MAKER_ROOT / "Volatility_arbitrage_run.py"),
+            str(cfg_path),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+            log_file.close()
+        except Exception as exc:  # pragma: no cover - 子进程异常
+            print(f"[ERROR] 启动 topic={topic_id} 失败: {exc}")
+            log_file.close()
+            return
+
+        task = self.tasks.get(topic_id) or TopicTask(topic_id=topic_id)
+        task.process = proc
+        task.config_path = cfg_path
+        task.log_path = log_path
+        task.status = "running"
+        task.heartbeat("started")
+        self.tasks[topic_id] = task
+        print(f"[START] topic={topic_id} pid={proc.pid} log={log_path}")
 
     # ========== 历史记录 ==========
     def _load_handled_topics(self) -> None:
@@ -327,10 +447,13 @@ class AutoRunManager:
         for topic_id, task in self.tasks.items():
             hb = task.last_heartbeat
             hb_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hb)) if hb else "-"
+            pid_text = str(task.process.pid) if task.process else "-"
+            log_name = task.log_path.name if task.log_path else "-"
             print(
                 f"[RUN] topic={topic_id} status={task.status} "
                 f"start={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task.start_time))} "
-                f"hb={hb_text} notes={len(task.notes)}"
+                f"pid={pid_text} hb={hb_text} notes={len(task.notes)} "
+                f"log={log_name}"
             )
 
     def _stop_topic(self, topic_id: str) -> None:
@@ -338,6 +461,11 @@ class AutoRunManager:
         if not task:
             print(f"[WARN] topic {topic_id} 不在运行列表中")
             return
+        if task.process and task.is_running():
+            try:
+                task.process.terminate()
+            except Exception as exc:  # pragma: no cover - 终止异常
+                print(f"[WARN] 无法终止 topic {topic_id}: {exc}")
         task.status = "stopped"
         task.heartbeat("stopped by user")
         print(f"[CHOICE] stop topic={topic_id}")
@@ -347,6 +475,11 @@ class AutoRunManager:
             self.latest_topics = run_filter_once(
                 self.filter_config, self.config.filter_output_path
             )
+            self.topic_details = {
+                _topic_id_from_entry(item): item
+                for item in self.latest_topics
+                if _topic_id_from_entry(item)
+            }
             new_topics = compute_new_topics(self.latest_topics, self.handled_topics)
             if new_topics:
                 preview = ", ".join(new_topics[:5])
@@ -354,6 +487,12 @@ class AutoRunManager:
                     f"[INCR] 新话题 {len(new_topics)} 个，将更新历史记录 preview={preview}"
                 )
                 self._update_handled_topics(new_topics)
+                for topic_id in new_topics:
+                    if topic_id in self.pending_topics:
+                        continue
+                    if topic_id in self.tasks and self.tasks[topic_id].is_running():
+                        continue
+                    self.pending_topics.append(topic_id)
             else:
                 print("[INCR] 无新增话题")
         except Exception as exc:  # pragma: no cover - 网络/外部依赖
@@ -420,13 +559,13 @@ def load_configs(
     )
 
 
-def run_filter_once(filter_conf: FilterConfig, output_path: Path) -> List[str]:
-    """调用筛选脚本，落盘 JSON，并返回话题 slug 列表。"""
+def run_filter_once(filter_conf: FilterConfig, output_path: Path) -> List[Dict[str, Any]]:
+    """调用筛选脚本，落盘 JSON，并返回话题列表。"""
 
     filter_conf.apply_highlight()
     result = filter_script.collect_filter_results(**filter_conf.to_filter_kwargs())
 
-    topics = []
+    topics: List[Dict[str, Any]] = []
     for ms in result.chosen:
         topics.append(
             {
@@ -452,7 +591,7 @@ def run_filter_once(filter_conf: FilterConfig, output_path: Path) -> List[str]:
     }
     _dump_json_file(output_path, payload)
     print(f"[FILTER] 已写入筛选结果到 {output_path}，共 {len(topics)} 个话题")
-    return [t["slug"] for t in topics]
+    return topics
 
 
 def main(argv: Optional[List[str]] = None) -> None:
