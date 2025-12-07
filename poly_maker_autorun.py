@@ -20,14 +20,17 @@ from typing import Any, Dict, List, Optional
 # =====================
 # 配置与常量
 # =====================
+PROJECT_ROOT = Path(__file__).resolve().parent
+MAKER_ROOT = PROJECT_ROOT / "POLYMARKET_MAKER"
+
 DEFAULT_GLOBAL_CONFIG = {
     "topics_poll_sec": 10.0,
     "command_poll_sec": 1.0,
     "max_concurrent_tasks": 2,
-    "log_dir": "logs/autorun",
-    "data_dir": "data",
-    "handled_topics_path": "data/handled_topics.json",
-    "filter_output_path": "data/topics_filtered.json",
+    "log_dir": str(MAKER_ROOT / "logs" / "autorun"),
+    "data_dir": str(MAKER_ROOT / "data"),
+    "handled_topics_path": str(MAKER_ROOT / "data" / "handled_topics.json"),
+    "filter_output_path": str(MAKER_ROOT / "data" / "topics_filtered.json"),
 }
 
 
@@ -186,13 +189,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--global-config",
         type=Path,
-        default=Path("config/global_config.json"),
+        default=MAKER_ROOT / "config" / "global_config.json",
         help="全局调度配置 JSON 路径",
     )
     parser.add_argument(
         "--strategy-config",
         type=Path,
-        default=Path("config/strategy_defaults.json"),
+        default=MAKER_ROOT / "config" / "strategy_defaults.json",
         help="策略参数模板 JSON 路径",
     )
     parser.add_argument(
