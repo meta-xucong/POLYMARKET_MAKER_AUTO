@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import Customize_fliter_blacklist as filter_script
+
 # =====================
 # 配置与常量
 # =====================
@@ -31,6 +33,7 @@ DEFAULT_GLOBAL_CONFIG = {
     "data_dir": str(MAKER_ROOT / "data"),
     "handled_topics_path": str(MAKER_ROOT / "data" / "handled_topics.json"),
     "filter_output_path": str(MAKER_ROOT / "data" / "topics_filtered.json"),
+    "filter_params_path": str(MAKER_ROOT / "config" / "filter_params.json"),
 }
 
 
@@ -43,6 +46,12 @@ def _load_json_file(path: Path) -> Dict[str, Any]:
             return json.load(f)
         except json.JSONDecodeError as exc:  # pragma: no cover - 粗略校验
             raise RuntimeError(f"无法解析 JSON 配置: {path}: {exc}") from exc
+
+
+def _dump_json_file(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 @dataclass
@@ -58,6 +67,9 @@ class GlobalConfig:
     filter_output_path: Path = field(
         default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["filter_output_path"])
     )
+    filter_params_path: Path = field(
+        default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["filter_params_path"])
+    )
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GlobalConfig":
@@ -70,11 +82,109 @@ class GlobalConfig:
             data_dir=Path(merged.get("data_dir", cls.data_dir)),
             handled_topics_path=Path(merged.get("handled_topics_path", cls.handled_topics_path)),
             filter_output_path=Path(merged.get("filter_output_path", cls.filter_output_path)),
+            filter_params_path=Path(merged.get("filter_params_path", cls.filter_params_path)),
         )
 
     def ensure_dirs(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class HighlightConfig:
+    max_hours: Optional[float] = 72.0
+    ask_min: Optional[float] = 0.80
+    ask_max: Optional[float] = 0.99
+    min_total_volume: Optional[float] = 20000.0
+    max_ask_diff: Optional[float] = 0.2
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "HighlightConfig":
+        data = data or {}
+        return cls(
+            max_hours=data.get("max_hours", cls.max_hours),
+            ask_min=data.get("ask_min", cls.ask_min),
+            ask_max=data.get("ask_max", cls.ask_max),
+            min_total_volume=data.get("min_total_volume", cls.min_total_volume),
+            max_ask_diff=data.get("max_ask_diff", cls.max_ask_diff),
+        )
+
+    def apply_to_filter(self) -> None:
+        if self.max_hours is not None:
+            filter_script.HIGHLIGHT_MAX_HOURS = float(self.max_hours)
+        if self.ask_min is not None:
+            filter_script.HIGHLIGHT_ASK_MIN = float(self.ask_min)
+        if self.ask_max is not None:
+            filter_script.HIGHLIGHT_ASK_MAX = float(self.ask_max)
+        if self.min_total_volume is not None:
+            filter_script.HIGHLIGHT_MIN_TOTAL_VOLUME = float(self.min_total_volume)
+        if self.max_ask_diff is not None:
+            filter_script.HIGHLIGHT_MAX_ASK_DIFF = float(self.max_ask_diff)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "max_hours": self.max_hours,
+            "ask_min": self.ask_min,
+            "ask_max": self.ask_max,
+            "min_total_volume": self.min_total_volume,
+            "max_ask_diff": self.max_ask_diff,
+        }
+
+
+@dataclass
+class FilterConfig:
+    min_end_hours: float = filter_script.DEFAULT_MIN_END_HOURS
+    max_end_days: int = 5
+    gamma_window_days: int = 2
+    gamma_min_window_hours: int = 1
+    legacy_end_days: int = filter_script.DEFAULT_LEGACY_END_DAYS
+    allow_illiquid: bool = False
+    skip_orderbook: bool = False
+    no_rest_backfill: bool = False
+    books_batch_size: int = 200
+    only: str = ""
+    highlight: HighlightConfig = field(default_factory=HighlightConfig)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FilterConfig":
+        data = data or {}
+        highlight_conf = HighlightConfig.from_dict(data.get("highlight"))
+        return cls(
+            min_end_hours=float(data.get("min_end_hours", cls.min_end_hours)),
+            max_end_days=int(data.get("max_end_days", cls.max_end_days)),
+            gamma_window_days=int(data.get("gamma_window_days", cls.gamma_window_days)),
+            gamma_min_window_hours=int(data.get("gamma_min_window_hours", cls.gamma_min_window_hours)),
+            legacy_end_days=int(data.get("legacy_end_days", cls.legacy_end_days)),
+            allow_illiquid=bool(data.get("allow_illiquid", cls.allow_illiquid)),
+            skip_orderbook=bool(data.get("skip_orderbook", cls.skip_orderbook)),
+            no_rest_backfill=bool(data.get("no_rest_backfill", cls.no_rest_backfill)),
+            books_batch_size=int(data.get("books_batch_size", cls.books_batch_size)),
+            only=str(data.get("only", cls.only)),
+            highlight=highlight_conf,
+        )
+
+    def to_filter_kwargs(self) -> Dict[str, Any]:
+        return {
+            "min_end_hours": self.min_end_hours,
+            "max_end_days": self.max_end_days,
+            "gamma_window_days": self.gamma_window_days,
+            "gamma_min_window_hours": self.gamma_min_window_hours,
+            "legacy_end_days": self.legacy_end_days,
+            "allow_illiquid": self.allow_illiquid,
+            "skip_orderbook": self.skip_orderbook,
+            "no_rest_backfill": self.no_rest_backfill,
+            "books_batch_size": self.books_batch_size,
+            "only": self.only,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            **self.to_filter_kwargs(),
+            "highlight": self.highlight.to_dict(),
+        }
+
+    def apply_highlight(self) -> None:
+        self.highlight.apply_to_filter()
 
 
 @dataclass
@@ -91,17 +201,25 @@ class TopicTask:
 
 
 class AutoRunManager:
-    def __init__(self, global_config: GlobalConfig, strategy_defaults: Dict[str, Any]):
+    def __init__(
+        self,
+        global_config: GlobalConfig,
+        strategy_defaults: Dict[str, Any],
+        filter_config: FilterConfig,
+    ):
         self.config = global_config
         self.strategy_defaults = strategy_defaults
+        self.filter_config = filter_config
         self.stop_event = threading.Event()
         self.command_queue: "queue.Queue[str]" = queue.Queue()
         self.tasks: Dict[str, TopicTask] = {}
+        self.latest_topics: List[str] = []
 
     # ========== 核心循环 ==========
     def run_loop(self) -> None:
         self.config.ensure_dirs()
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
+        self._refresh_topics()
         while not self.stop_event.is_set():
             self._process_commands()
             self._tick_once()
@@ -114,6 +232,13 @@ class AutoRunManager:
             status = task.status
             note = task.notes[-1] if task.notes else "idle"
             print(f"[RUN] topic={topic_id} status={status} last_note={note}")
+
+        if self.latest_topics:
+            topics_preview = ", ".join(self.latest_topics[:5])
+            print(
+                f"[FILTER] 当前筛选话题数={len(self.latest_topics)} "
+                f"preview={topics_preview}"
+            )
 
     # ========== 命令处理 ==========
     def enqueue_command(self, command: str) -> None:
@@ -141,6 +266,9 @@ class AutoRunManager:
             _, topic_id = cmd.split(" ", 1)
             self._stop_topic(topic_id.strip())
             return
+        if cmd == "refresh":
+            self._refresh_topics()
+            return
         print(f"[WARN] 未识别命令: {cmd}")
 
     def _print_status(self) -> None:
@@ -164,6 +292,15 @@ class AutoRunManager:
         task.status = "stopped"
         task.heartbeat("stopped by user")
         print(f"[CHOICE] stop topic={topic_id}")
+
+    def _refresh_topics(self) -> None:
+        try:
+            self.latest_topics = run_filter_once(
+                self.filter_config, self.config.filter_output_path
+            )
+        except Exception as exc:  # pragma: no cover - 网络/外部依赖
+            print(f"[ERROR] 筛选流程失败：{exc}")
+            self.latest_topics = []
 
     # ========== 入口方法 ==========
     def command_loop(self) -> None:
@@ -199,6 +336,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="策略参数模板 JSON 路径",
     )
     parser.add_argument(
+        "--filter-config",
+        type=Path,
+        default=MAKER_ROOT / "config" / "filter_params.json",
+        help="筛选参数配置 JSON 路径",
+    )
+    parser.add_argument(
         "--no-repl",
         action="store_true",
         help="禁用交互式命令循环，仅按配置运行",
@@ -206,17 +349,59 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_configs(args: argparse.Namespace) -> tuple[GlobalConfig, Dict[str, Any]]:
+def load_configs(
+    args: argparse.Namespace,
+) -> tuple[GlobalConfig, Dict[str, Any], FilterConfig]:
     global_conf_raw = _load_json_file(args.global_config)
     strategy_conf_raw = _load_json_file(args.strategy_config)
-    return GlobalConfig.from_dict(global_conf_raw), strategy_conf_raw
+    filter_conf_raw = _load_json_file(args.filter_config)
+    return (
+        GlobalConfig.from_dict(global_conf_raw),
+        strategy_conf_raw,
+        FilterConfig.from_dict(filter_conf_raw),
+    )
+
+
+def run_filter_once(filter_conf: FilterConfig, output_path: Path) -> List[str]:
+    """调用筛选脚本，落盘 JSON，并返回话题 slug 列表。"""
+
+    filter_conf.apply_highlight()
+    result = filter_script.collect_filter_results(**filter_conf.to_filter_kwargs())
+
+    topics = []
+    for ms in result.chosen:
+        topics.append(
+            {
+                "slug": ms.slug,
+                "title": ms.title,
+                "yes_token": ms.yes.token_id,
+                "no_token": ms.no.token_id,
+                "end_time": ms.end_time.isoformat() if ms.end_time else None,
+                "liquidity": ms.liquidity,
+                "total_volume": ms.totalVolume,
+            }
+        )
+
+    payload = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "params": filter_conf.to_dict(),
+        "total_markets": result.total_markets,
+        "candidates": len(result.candidates),
+        "chosen": len(result.chosen),
+        "rejected": len(result.rejected),
+        "highlights": len(result.highlights),
+        "topics": topics,
+    }
+    _dump_json_file(output_path, payload)
+    print(f"[FILTER] 已写入筛选结果到 {output_path}，共 {len(topics)} 个话题")
+    return [t["slug"] for t in topics]
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-    global_conf, strategy_conf = load_configs(args)
+    global_conf, strategy_conf, filter_conf = load_configs(args)
 
-    manager = AutoRunManager(global_conf, strategy_conf)
+    manager = AutoRunManager(global_conf, strategy_conf, filter_conf)
 
     def _handle_sigterm(signum: int, frame: Any) -> None:  # pragma: no cover - 信号处理不可测
         print(f"\n[WARN] signal {signum} received, exiting...")
