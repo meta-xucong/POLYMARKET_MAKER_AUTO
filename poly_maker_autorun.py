@@ -38,7 +38,7 @@ DEFAULT_GLOBAL_CONFIG = {
     "handled_topics_path": str(MAKER_ROOT / "data" / "handled_topics.json"),
     "filter_output_path": str(MAKER_ROOT / "data" / "topics_filtered.json"),
     "filter_params_path": str(MAKER_ROOT / "config" / "filter_params.json"),
-    "filter_timeout_sec": 30.0,
+    "filter_timeout_sec": None,
     "filter_max_retries": 1,
     "filter_retry_delay_sec": 3.0,
     "process_start_retries": 1,
@@ -130,7 +130,7 @@ class GlobalConfig:
     filter_params_path: Path = field(
         default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["filter_params_path"])
     )
-    filter_timeout_sec: float = DEFAULT_GLOBAL_CONFIG["filter_timeout_sec"]
+    filter_timeout_sec: Optional[float] = DEFAULT_GLOBAL_CONFIG["filter_timeout_sec"]
     filter_max_retries: int = DEFAULT_GLOBAL_CONFIG["filter_max_retries"]
     filter_retry_delay_sec: float = DEFAULT_GLOBAL_CONFIG["filter_retry_delay_sec"]
     process_start_retries: int = DEFAULT_GLOBAL_CONFIG["process_start_retries"]
@@ -199,7 +199,9 @@ class GlobalConfig:
             handled_topics_path=handled_topics_path,
             filter_output_path=filter_output_path,
             filter_params_path=filter_params_path,
-            filter_timeout_sec=float(merged.get("filter_timeout_sec", cls.filter_timeout_sec)),
+            filter_timeout_sec=cls._parse_timeout(
+                merged.get("filter_timeout_sec", cls.filter_timeout_sec)
+            ),
             filter_max_retries=int(merged.get("filter_max_retries", cls.filter_max_retries)),
             filter_retry_delay_sec=float(
                 merged.get("filter_retry_delay_sec", cls.filter_retry_delay_sec)
@@ -217,6 +219,15 @@ class GlobalConfig:
             ),
             runtime_status_path=runtime_status_path,
         )
+
+    @staticmethod
+    def _parse_timeout(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
 
     def ensure_dirs(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -847,7 +858,7 @@ def run_filter_once(
     filter_conf: FilterConfig,
     output_path: Path,
     *,
-    timeout_sec: float = 30.0,
+    timeout_sec: Optional[float] = None,
     max_retries: int = 0,
     retry_delay_sec: float = 3.0,
 ) -> List[Dict[str, Any]]:
@@ -858,17 +869,22 @@ def run_filter_once(
 
     attempts = max(1, int(max_retries) + 1)
     for attempt in range(1, attempts + 1):
+        timeout_label = f"{timeout_sec}s" if timeout_sec is not None else "no-timeout"
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     filter_script.collect_filter_results, **filter_conf.to_filter_kwargs()
                 )
-                result = future.result(timeout=timeout_sec)
+                result = (
+                    future.result(timeout=timeout_sec)
+                    if timeout_sec is not None
+                    else future.result()
+                )
             break
         except concurrent.futures.TimeoutError as exc:  # pragma: no cover - 线程超时
             print(
-                "[WARN] 筛选调用超时（{}s 内未返回，通常为 Gamma/clob 接口无响应或窗口过大）".format(
-                    timeout_sec
+                "[WARN] 筛选调用超时（{} 内未返回，通常为 Gamma/clob 接口无响应或窗口过大）".format(
+                    timeout_label
                 )
             )
             if attempt >= attempts:
@@ -876,7 +892,7 @@ def run_filter_once(
             time.sleep(retry_delay_sec)
         except Exception as exc:  # pragma: no cover - 网络/线程异常
             print(
-                f"[WARN] 筛选调用失败（尝试 {attempt}/{attempts}，timeout={timeout_sec}s）: {exc}"
+                f"[WARN] 筛选调用失败（尝试 {attempt}/{attempts}，timeout={timeout_label}）: {exc}"
             )
             if attempt >= attempts:
                 raise
