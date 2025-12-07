@@ -341,7 +341,11 @@ def _early_filter_reason(ms: MarketSnapshot, min_end_hours: float, legacy_end_da
 
 _POLY_HOST = os.environ.get("POLY_HOST", "https://clob.polymarket.com").rstrip("/")
 
-def _rest_books_backfill(candidates: List[MarketSnapshot], batch_size: int = 200, timeout: float = 10.0) -> None:
+def _rest_books_backfill(
+    candidates: List[MarketSnapshot],
+    batch_size: int = 200,
+    timeout: float = 5.0,
+) -> None:
     # 仅对仍缺买卖价的 token 做回补（任一侧有价即可跳过）
     missing: List[str] = []
     index: Dict[str, Tuple[MarketSnapshot, str]] = {}
@@ -624,6 +628,7 @@ def collect_filter_results(
     skip_orderbook: bool = False,
     no_rest_backfill: bool = False,
     books_batch_size: int = 200,
+    books_timeout: float = 5.0,
     only: str = "",
     blacklist_terms: Optional[Iterable[str]] = None,
     prefetched_markets: Optional[List[Dict[str, Any]]] = None,
@@ -664,7 +669,9 @@ def collect_filter_results(
             early_rejects.append((ms, reason))
 
     if not skip_orderbook and market_list and (not no_rest_backfill):
-        _rest_books_backfill(market_list, batch_size=books_batch_size)
+        _rest_books_backfill(
+            market_list, batch_size=books_batch_size, timeout=books_timeout
+        )
 
     chosen: List[MarketSnapshot] = []
     rejects: List[Tuple[MarketSnapshot, str]] = early_rejects.copy()
@@ -713,6 +720,7 @@ def _print_highlighted(highlights: List[Tuple[MarketSnapshot, OutcomeSnapshot, f
 def main():
     ap = argparse.ArgumentParser(description="Polymarket 市场筛选（REST-only：/books 批量回补买一/卖一）")
     ap.add_argument("--books-batch-size", type=int, default=200, help="REST /books 批量回补的 token_id 数量上限（非流式模式）")
+    ap.add_argument("--books-timeout", type=float, default=5.0, help="REST /books 回补单次请求超时时间（秒，非流式模式）")
     ap.add_argument("--no_rest_backfill", dest="no_rest_backfill", action="store_true", help="关闭 REST 回补（诊断用，默认开启）")
     ap.add_argument("--skip-orderbook", action="store_true", help="跳过任何订单簿/价格回补（仅诊断）")
     ap.add_argument("--allow-illiquid", action="store_true", help="允许无报价市场通过（仅诊断）")
@@ -744,6 +752,7 @@ def main():
     ap.add_argument("--stream", action="store_true", help="启用流式逐个输出（按分片处理）")
     ap.add_argument("--stream-chunk-size", type=int, default=200, help="流式：每个分片的市场数量")
     ap.add_argument("--stream-books-batch-size", type=int, default=200, help="流式：每个分片内 REST /books 批量回补的 token_id 数量上限")
+    ap.add_argument("--stream-books-timeout", type=float, default=5.0, help="流式：REST /books 回补单次请求超时时间（秒）")
     ap.add_argument("--stream-verbose", action="store_true", help="流式：逐个输出详细块（默认仅单行）")
     args = ap.parse_args()
 
@@ -805,7 +814,11 @@ def main():
 
             # 分片内批量 REST 回补
             if not args.skip_orderbook and candidates and (not args.no_rest_backfill):
-                _rest_books_backfill(candidates, batch_size=args.stream_books_batch_size)
+                _rest_books_backfill(
+                    candidates,
+                    batch_size=args.stream_books_batch_size,
+                    timeout=args.stream_books_timeout,
+                )
 
             # 最终判定（即时输出）
             for ms in candidates:
@@ -838,6 +851,7 @@ def main():
         skip_orderbook=args.skip_orderbook,
         no_rest_backfill=args.no_rest_backfill,
         books_batch_size=args.books_batch_size,
+        books_timeout=args.books_timeout,
         only=args.only,
         prefetched_markets=mkts_raw,
     )

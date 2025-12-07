@@ -275,6 +275,7 @@ class FilterConfig:
     skip_orderbook: bool = False
     no_rest_backfill: bool = False
     books_batch_size: int = 200
+    books_timeout_sec: float = 5.0
     only: str = ""
     blacklist_terms: List[str] = field(
         default_factory=lambda: list(filter_script.DEFAULT_BLACKLIST_TERMS)
@@ -295,6 +296,9 @@ class FilterConfig:
             skip_orderbook=bool(data.get("skip_orderbook", cls.skip_orderbook)),
             no_rest_backfill=bool(data.get("no_rest_backfill", cls.no_rest_backfill)),
             books_batch_size=int(data.get("books_batch_size", cls.books_batch_size)),
+            books_timeout_sec=float(
+                data.get("books_timeout_sec", cls.books_timeout_sec)
+            ),
             only=str(data.get("only", cls.only)),
             blacklist_terms=[
                 str(t).strip()
@@ -315,6 +319,7 @@ class FilterConfig:
             "skip_orderbook": self.skip_orderbook,
             "no_rest_backfill": self.no_rest_backfill,
             "books_batch_size": self.books_batch_size,
+            "books_timeout": self.books_timeout_sec,
             "only": self.only,
             "blacklist_terms": self.blacklist_terms,
         }
