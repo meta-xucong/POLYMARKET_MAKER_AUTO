@@ -1,6 +1,6 @@
 {
   "min_end_hours": 1.0,
-  "max_end_days": 5,
+  "max_end_days": 2,
   "gamma_window_days": 2,
   "gamma_min_window_hours": 1,
   "legacy_end_days": 730,
@@ -10,10 +10,10 @@
   "books_batch_size": 200,
   "only": "",
   "highlight": {
-    "max_hours": 72,
-    "ask_min": 0.80,
+    "max_hours": 48,
+    "ask_min": 0.94,
     "ask_max": 0.99,
-    "min_total_volume": 20000,
+    "min_total_volume": 10000,
     "max_ask_diff": 0.2
   }
 }
