@@ -54,6 +54,36 @@ def _dump_json_file(path: Path, data: Dict[str, Any]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def read_handled_topics(path: Path) -> set[str]:
+    """读取历史已处理话题集合，空文件或字段缺失则返回空集合。"""
+
+    data = _load_json_file(path)
+    topics = data.get("topics") or data.get("handled_topics")
+    if topics is None:
+        return set()
+    if not isinstance(topics, list):  # pragma: no cover - 容错
+        print(f"[WARN] handled_topics 文件格式异常，已忽略: {path}")
+        return set()
+    return {str(t) for t in topics}
+
+
+def write_handled_topics(path: Path, topics: set[str]) -> None:
+    """写入最新的已处理话题集合。"""
+
+    payload = {
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "total": len(topics),
+        "topics": sorted(topics),
+    }
+    _dump_json_file(path, payload)
+
+
+def compute_new_topics(latest: List[str], handled: set[str]) -> List[str]:
+    """从最新筛选结果中筛出尚未处理的话题列表。"""
+
+    return [topic for topic in latest if topic not in handled]
+
+
 @dataclass
 class GlobalConfig:
     topics_poll_sec: float = DEFAULT_GLOBAL_CONFIG["topics_poll_sec"]
@@ -214,10 +244,12 @@ class AutoRunManager:
         self.command_queue: "queue.Queue[str]" = queue.Queue()
         self.tasks: Dict[str, TopicTask] = {}
         self.latest_topics: List[str] = []
+        self.handled_topics: set[str] = set()
 
     # ========== 核心循环 ==========
     def run_loop(self) -> None:
         self.config.ensure_dirs()
+        self._load_handled_topics()
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
         self._refresh_topics()
         while not self.stop_event.is_set():
@@ -239,6 +271,23 @@ class AutoRunManager:
                 f"[FILTER] 当前筛选话题数={len(self.latest_topics)} "
                 f"preview={topics_preview}"
             )
+
+    # ========== 历史记录 ==========
+    def _load_handled_topics(self) -> None:
+        self.handled_topics = read_handled_topics(self.config.handled_topics_path)
+        if self.handled_topics:
+            preview = ", ".join(sorted(self.handled_topics)[:5])
+            print(
+                f"[INIT] 已加载历史话题 {len(self.handled_topics)} 个 preview={preview}"
+            )
+        else:
+            print("[INIT] 尚无历史处理话题记录")
+
+    def _update_handled_topics(self, new_topics: List[str]) -> None:
+        if not new_topics:
+            return
+        self.handled_topics.update(new_topics)
+        write_handled_topics(self.config.handled_topics_path, self.handled_topics)
 
     # ========== 命令处理 ==========
     def enqueue_command(self, command: str) -> None:
@@ -298,6 +347,15 @@ class AutoRunManager:
             self.latest_topics = run_filter_once(
                 self.filter_config, self.config.filter_output_path
             )
+            new_topics = compute_new_topics(self.latest_topics, self.handled_topics)
+            if new_topics:
+                preview = ", ".join(new_topics[:5])
+                print(
+                    f"[INCR] 新话题 {len(new_topics)} 个，将更新历史记录 preview={preview}"
+                )
+                self._update_handled_topics(new_topics)
+            else:
+                print("[INCR] 无新增话题")
         except Exception as exc:  # pragma: no cover - 网络/外部依赖
             print(f"[ERROR] 筛选流程失败：{exc}")
             self.latest_topics = []
