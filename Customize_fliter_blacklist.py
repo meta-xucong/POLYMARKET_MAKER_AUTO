@@ -416,6 +416,9 @@ def _rest_books_backfill(
 # -------------------------------
 
 def _final_pass_reason(ms: MarketSnapshot, require_quotes: bool) -> Tuple[bool, str]:
+    hit = _blacklist_hit(ms)
+    if hit:
+        return False, f"命中黑名单：{hit}"
     if require_quotes:
         yes_ok = (ms.yes.bid is not None or ms.yes.ask is not None)
         no_ok  = (ms.no.bid is not None or ms.no.ask is not None)
