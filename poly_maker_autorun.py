@@ -330,6 +330,7 @@ class TopicTask:
     log_path: Optional[Path] = None
     config_path: Optional[Path] = None
     log_excerpt: str = ""
+    restart_attempts: int = 0
 
     def heartbeat(self, message: str) -> None:
         self.last_heartbeat = time.time()
@@ -395,10 +396,29 @@ class AutoRunManager:
                 task.last_heartbeat = time.time()
                 self._update_log_excerpt(task)
                 continue
-            if task.status not in {"stopped", "exited", "error"}:
-                task.status = "exited" if rc == 0 else "error"
-            task.heartbeat(f"process finished rc={rc}")
-            self._update_log_excerpt(task)
+            self._handle_process_exit(task, rc)
+
+    def _handle_process_exit(self, task: TopicTask, rc: int) -> None:
+        task.process = None
+        if task.status not in {"stopped", "exited", "error"}:
+            task.status = "exited" if rc == 0 else "error"
+        task.heartbeat(f"process finished rc={rc}")
+        self._update_log_excerpt(task)
+
+        if rc != 0:
+            max_retries = max(0, int(self.config.process_start_retries))
+            if task.restart_attempts < max_retries:
+                task.restart_attempts += 1
+                task.status = "restarting"
+                task.heartbeat(
+                    f"restart attempt {task.restart_attempts}/{max_retries} after rc={rc}"
+                )
+                time.sleep(self.config.process_retry_delay_sec)
+                if self._start_topic_process(task.topic_id):
+                    return
+                if task.restart_attempts < max_retries and task.topic_id not in self.pending_topics:
+                    self.pending_topics.append(task.topic_id)
+            task.status = "error"
 
     def _update_log_excerpt(self, task: TopicTask, max_bytes: int = 2000) -> None:
         if not task.log_path or not task.log_path.exists():
