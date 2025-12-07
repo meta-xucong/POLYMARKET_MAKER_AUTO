@@ -21,7 +21,9 @@ try:
     import requests
 except Exception as e:
     print("[FATAL] 缺少 requests，请先 pip install requests", file=sys.stderr)
-    raise
+    sys.exit(
+        "[EXIT] 已终止：未安装 requests，安装方法示例：pip install requests"
+    )
 
 # ===============================
 # 参数集中区（集中管理默认口径）
