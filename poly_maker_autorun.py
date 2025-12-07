@@ -8,6 +8,7 @@ poly_maker_autorun
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import queue
 import signal
@@ -36,6 +37,13 @@ DEFAULT_GLOBAL_CONFIG = {
     "handled_topics_path": str(MAKER_ROOT / "data" / "handled_topics.json"),
     "filter_output_path": str(MAKER_ROOT / "data" / "topics_filtered.json"),
     "filter_params_path": str(MAKER_ROOT / "config" / "filter_params.json"),
+    "filter_timeout_sec": 30.0,
+    "filter_max_retries": 1,
+    "filter_retry_delay_sec": 3.0,
+    "process_start_retries": 1,
+    "process_retry_delay_sec": 2.0,
+    "process_graceful_timeout_sec": 5.0,
+    "runtime_status_path": str(MAKER_ROOT / "data" / "autorun_status.json"),
 }
 
 
@@ -121,6 +129,17 @@ class GlobalConfig:
     filter_params_path: Path = field(
         default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["filter_params_path"])
     )
+    filter_timeout_sec: float = DEFAULT_GLOBAL_CONFIG["filter_timeout_sec"]
+    filter_max_retries: int = DEFAULT_GLOBAL_CONFIG["filter_max_retries"]
+    filter_retry_delay_sec: float = DEFAULT_GLOBAL_CONFIG["filter_retry_delay_sec"]
+    process_start_retries: int = DEFAULT_GLOBAL_CONFIG["process_start_retries"]
+    process_retry_delay_sec: float = DEFAULT_GLOBAL_CONFIG["process_retry_delay_sec"]
+    process_graceful_timeout_sec: float = DEFAULT_GLOBAL_CONFIG[
+        "process_graceful_timeout_sec"
+    ]
+    runtime_status_path: Path = field(
+        default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["runtime_status_path"])
+    )
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GlobalConfig":
@@ -134,6 +153,25 @@ class GlobalConfig:
             handled_topics_path=Path(merged.get("handled_topics_path", cls.handled_topics_path)),
             filter_output_path=Path(merged.get("filter_output_path", cls.filter_output_path)),
             filter_params_path=Path(merged.get("filter_params_path", cls.filter_params_path)),
+            filter_timeout_sec=float(merged.get("filter_timeout_sec", cls.filter_timeout_sec)),
+            filter_max_retries=int(merged.get("filter_max_retries", cls.filter_max_retries)),
+            filter_retry_delay_sec=float(
+                merged.get("filter_retry_delay_sec", cls.filter_retry_delay_sec)
+            ),
+            process_start_retries=int(
+                merged.get("process_start_retries", cls.process_start_retries)
+            ),
+            process_retry_delay_sec=float(
+                merged.get("process_retry_delay_sec", cls.process_retry_delay_sec)
+            ),
+            process_graceful_timeout_sec=float(
+                merged.get(
+                    "process_graceful_timeout_sec", cls.process_graceful_timeout_sec
+                )
+            ),
+            runtime_status_path=Path(
+                merged.get("runtime_status_path", cls.runtime_status_path)
+            ),
         )
 
     def ensure_dirs(self) -> None:
@@ -277,25 +315,31 @@ class AutoRunManager:
         self.pending_topics: List[str] = []
         self._next_topics_refresh: float = 0.0
         self._next_status_dump: float = 0.0
+        self.status_path = self.config.runtime_status_path
 
     # ========== 核心循环 ==========
     def run_loop(self) -> None:
         self.config.ensure_dirs()
         self._load_handled_topics()
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
-        while not self.stop_event.is_set():
-            now = time.time()
-            self._process_commands()
-            self._poll_tasks()
-            self._schedule_pending_topics()
-            if now >= self._next_topics_refresh:
-                self._refresh_topics()
-                self._next_topics_refresh = now + self.config.topics_poll_sec
-            if now >= self._next_status_dump:
-                self._print_status()
-                self._next_status_dump = now + max(5.0, self.config.command_poll_sec)
-            time.sleep(self.config.command_poll_sec)
-        print("[DONE] autorun stopped")
+        try:
+            while not self.stop_event.is_set():
+                now = time.time()
+                self._process_commands()
+                self._poll_tasks()
+                self._schedule_pending_topics()
+                if now >= self._next_topics_refresh:
+                    self._refresh_topics()
+                    self._next_topics_refresh = now + self.config.topics_poll_sec
+                if now >= self._next_status_dump:
+                    self._print_status()
+                    self._dump_runtime_status()
+                    self._next_status_dump = now + max(5.0, self.config.command_poll_sec)
+                time.sleep(self.config.command_poll_sec)
+        finally:
+            self._cleanup_all_tasks()
+            self._dump_runtime_status()
+            print("[DONE] autorun stopped")
 
     def _poll_tasks(self) -> None:
         for task in list(self.tasks.values()):
@@ -381,17 +425,25 @@ class AutoRunManager:
             str(MAKER_ROOT / "Volatility_arbitrage_run.py"),
             str(cfg_path),
         ]
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
-            log_file.close()
-        except Exception as exc:  # pragma: no cover - 子进程异常
-            print(f"[ERROR] 启动 topic={topic_id} 失败: {exc}")
-            log_file.close()
-            return
+        proc: Optional[subprocess.Popen] = None
+        attempts = max(1, int(self.config.process_start_retries))
+        for attempt in range(1, attempts + 1):
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
+                log_file.close()
+                break
+            except Exception as exc:  # pragma: no cover - 子进程异常
+                print(
+                    f"[ERROR] 启动 topic={topic_id} 失败（尝试 {attempt}/{attempts}）: {exc}"
+                )
+                if attempt >= attempts:
+                    log_file.close()
+                    return
+                time.sleep(self.config.process_retry_delay_sec)
 
         task = self.tasks.get(topic_id) or TopicTask(topic_id=topic_id)
         task.process = proc
@@ -472,19 +524,35 @@ class AutoRunManager:
         if not task:
             print(f"[WARN] topic {topic_id} 不在运行列表中")
             return
-        if task.process and task.is_running():
-            try:
-                task.process.terminate()
-            except Exception as exc:  # pragma: no cover - 终止异常
-                print(f"[WARN] 无法终止 topic {topic_id}: {exc}")
-        task.status = "stopped"
-        task.heartbeat("stopped by user")
+        self._terminate_task(task, reason="stopped by user")
         print(f"[CHOICE] stop topic={topic_id}")
+
+    def _terminate_task(self, task: TopicTask, reason: str) -> None:
+        proc = task.process
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception as exc:  # pragma: no cover - 终止异常
+                print(f"[WARN] 无法终止 topic {task.topic_id}: {exc}")
+            try:
+                proc.wait(timeout=self.config.process_graceful_timeout_sec)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+                except Exception as exc:  # pragma: no cover - kill 失败
+                    print(f"[WARN] 无法强杀 topic {task.topic_id}: {exc}")
+        task.status = task.status if task.status in {"error"} else "stopped"
+        task.heartbeat(reason)
 
     def _refresh_topics(self) -> None:
         try:
             self.latest_topics = run_filter_once(
-                self.filter_config, self.config.filter_output_path
+                self.filter_config,
+                self.config.filter_output_path,
+                timeout_sec=self.config.filter_timeout_sec,
+                max_retries=self.config.filter_max_retries,
+                retry_delay_sec=self.config.filter_retry_delay_sec,
             )
             self.topic_details = {
                 _topic_id_from_entry(item): item
@@ -509,6 +577,34 @@ class AutoRunManager:
         except Exception as exc:  # pragma: no cover - 网络/外部依赖
             print(f"[ERROR] 筛选流程失败：{exc}")
             self.latest_topics = []
+
+    def _cleanup_all_tasks(self) -> None:
+        for task in list(self.tasks.values()):
+            if task.is_running():
+                print(f"[CLEAN] 停止 topic={task.topic_id} ...")
+                self._terminate_task(task, reason="cleanup")
+        # 写回 handled_topics，确保最新状态落盘
+        write_handled_topics(self.config.handled_topics_path, self.handled_topics)
+
+    def _dump_runtime_status(self) -> None:
+        payload = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "handled_topics_total": len(self.handled_topics),
+            "handled_topics": sorted(self.handled_topics),
+            "pending_topics": list(self.pending_topics),
+            "tasks": {},
+        }
+        for topic_id, task in self.tasks.items():
+            payload["tasks"][topic_id] = {
+                "status": task.status,
+                "pid": task.process.pid if task.process else None,
+                "last_heartbeat": task.last_heartbeat,
+                "notes": task.notes,
+                "log_path": str(task.log_path) if task.log_path else None,
+                "config_path": str(task.config_path) if task.config_path else None,
+            }
+        _dump_json_file(self.status_path, payload)
+        print(f"[STATE] 已写入运行状态到 {self.status_path}")
 
     # ========== 入口方法 ==========
     def command_loop(self) -> None:
@@ -575,11 +671,34 @@ def load_configs(
     )
 
 
-def run_filter_once(filter_conf: FilterConfig, output_path: Path) -> List[Dict[str, Any]]:
-    """调用筛选脚本，落盘 JSON，并返回话题列表。"""
+def run_filter_once(
+    filter_conf: FilterConfig,
+    output_path: Path,
+    *,
+    timeout_sec: float = 30.0,
+    max_retries: int = 0,
+    retry_delay_sec: float = 3.0,
+) -> List[Dict[str, Any]]:
+    """调用筛选脚本，落盘 JSON，并返回话题列表，带超时与可选重试。"""
 
     filter_conf.apply_highlight()
-    result = filter_script.collect_filter_results(**filter_conf.to_filter_kwargs())
+
+    attempts = max(1, int(max_retries) + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    filter_script.collect_filter_results, **filter_conf.to_filter_kwargs()
+                )
+                result = future.result(timeout=timeout_sec)
+            break
+        except Exception as exc:  # pragma: no cover - 网络/线程异常
+            print(
+                f"[WARN] 筛选调用失败（尝试 {attempt}/{attempts}，timeout={timeout_sec}s）: {exc}"
+            )
+            if attempt >= attempts:
+                raise
+            time.sleep(retry_delay_sec)
 
     topics: List[Dict[str, Any]] = []
     for ms in result.chosen:
