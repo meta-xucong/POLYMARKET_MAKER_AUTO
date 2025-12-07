@@ -365,6 +365,7 @@ class AutoRunManager:
     def run_loop(self) -> None:
         self.config.ensure_dirs()
         self._load_handled_topics()
+        self._restore_runtime_status()
         print(f"[INIT] autorun start | poll={self.config.topics_poll_sec}s")
         try:
             while not self.stop_event.is_set():
@@ -659,6 +660,54 @@ class AutoRunManager:
                 self._terminate_task(task, reason="cleanup")
         # 写回 handled_topics，确保最新状态落盘
         write_handled_topics(self.config.handled_topics_path, self.handled_topics)
+
+    def _restore_runtime_status(self) -> None:
+        """尝试从上次运行的状态文件恢复待处理队列等信息。"""
+
+        if not self.status_path.exists():
+            return
+        try:
+            payload = _load_json_file(self.status_path)
+            handled_topics = payload.get("handled_topics") or []
+            pending_topics = payload.get("pending_topics") or []
+            tasks_snapshot = payload.get("tasks") or {}
+        except Exception as exc:  # pragma: no cover - 容错
+            print(f"[WARN] 无法读取运行状态文件，已忽略: {exc}")
+            return
+
+        if handled_topics:
+            self.handled_topics.update(str(t) for t in handled_topics)
+
+        restored_topics: List[str] = []
+        for topic_id in pending_topics:
+            topic_id = str(topic_id)
+            if topic_id in self.pending_topics or topic_id in self.handled_topics:
+                continue
+            restored_topics.append(topic_id)
+            self.pending_topics.append(topic_id)
+
+        for topic_id, info in tasks_snapshot.items():
+            topic_id = str(topic_id)
+            if topic_id in self.handled_topics:
+                continue
+            if topic_id not in self.pending_topics:
+                restored_topics.append(topic_id)
+                self.pending_topics.append(topic_id)
+
+            task = TopicTask(topic_id=topic_id)
+            task.status = "pending"
+            task.notes.append("restored from runtime_status")
+            config_path = info.get("config_path")
+            log_path = info.get("log_path")
+            if config_path:
+                task.config_path = Path(config_path)
+            if log_path:
+                task.log_path = Path(log_path)
+            self.tasks[topic_id] = task
+
+        if restored_topics:
+            preview = ", ".join(restored_topics[:5])
+            print(f"[RESTORE] 已从运行状态恢复 {len(restored_topics)} 个话题：{preview}")
 
     def _dump_runtime_status(self) -> None:
         payload = {
