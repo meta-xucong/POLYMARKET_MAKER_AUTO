@@ -475,19 +475,27 @@ class AutoRunManager:
         merged = {**base_template, **base, **topic_overrides}
 
         topic_info = self.topic_details.get(topic_id, {})
-        merged.setdefault(
-            "market_url",
-            f"https://polymarket.com/market/{topic_id}",
-        )
-        merged.setdefault("topic_id", topic_id)
+        slug = topic_info.get("slug") or topic_id
+        merged["market_url"] = f"https://polymarket.com/market/{slug}"
+        merged["topic_id"] = topic_id
+
         if topic_info.get("title"):
-            merged.setdefault("topic_name", topic_info.get("title"))
+            merged["topic_name"] = topic_info.get("title")
         if topic_info.get("yes_token"):
-            merged.setdefault("yes_token", topic_info.get("yes_token"))
+            merged["yes_token"] = topic_info.get("yes_token")
         if topic_info.get("no_token"):
-            merged.setdefault("no_token", topic_info.get("no_token"))
+            merged["no_token"] = topic_info.get("no_token")
         if topic_info.get("end_time"):
-            merged.setdefault("end_time", topic_info.get("end_time"))
+            merged["end_time"] = topic_info.get("end_time")
+
+        highlight_sides = topic_info.get("highlight_sides") or []
+        preferred_side = topic_info.get("preferred_side") or None
+        if preferred_side is None and highlight_sides:
+            preferred_side = highlight_sides[0]
+        if preferred_side:
+            merged["side"] = preferred_side
+        if highlight_sides:
+            merged["highlight_sides"] = highlight_sides
         return merged
 
     def _start_topic_process(self, topic_id: str) -> bool:
@@ -847,8 +855,18 @@ def run_filter_once(
                 raise
             time.sleep(retry_delay_sec)
 
+    highlight_map: Dict[str, List[str]] = {}
+    for ho in result.highlights:
+        slug = ho.market.slug
+        side = (ho.outcome.name or "").upper()
+        if not side:
+            continue
+        highlight_map.setdefault(slug, []).append(side)
+
     topics: List[Dict[str, Any]] = []
     for ms in result.chosen:
+        highlight_sides = highlight_map.get(ms.slug, [])
+        preferred_side = highlight_sides[0] if highlight_sides else None
         topics.append(
             {
                 "slug": ms.slug,
@@ -858,6 +876,8 @@ def run_filter_once(
                 "end_time": ms.end_time.isoformat() if ms.end_time else None,
                 "liquidity": ms.liquidity,
                 "total_volume": ms.totalVolume,
+                "preferred_side": preferred_side,
+                "highlight_sides": highlight_sides,
             }
         )
 
