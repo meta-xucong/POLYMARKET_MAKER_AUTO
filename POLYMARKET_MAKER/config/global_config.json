@@ -5,10 +5,10 @@
     "task_timeout_seconds": 180
   },
   "paths": {
-    "log_directory": "./logs",
-    "data_directory": "./data",
-    "order_history_file": "./data/order_history.jsonl",
-    "run_state_file": "./data/run_state.json"
+    "log_directory": "./POLYMARKET_MAKER/logs",
+    "data_directory": "./POLYMARKET_MAKER/logs",
+    "order_history_file": "./POLYMARKET_MAKER/logs/order_history.jsonl",
+    "run_state_file": "./POLYMARKET_MAKER/logs/run_state.json"
   },
   "retry_strategy": {
     "max_attempts": 5,

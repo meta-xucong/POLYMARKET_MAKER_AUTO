@@ -38,10 +38,10 @@
 | `scheduler.max_concurrent_jobs` | 同时运行的子进程/任务上限。 | 整数 | 根据机器核数调整，1~4 为宜。 |
 | `scheduler.poll_interval_seconds` | 轮询筛选结果的间隔秒数。 | 浮点 | 1~10 秒。 |
 | `scheduler.task_timeout_seconds` | 单个任务的超时时长。 | 整数（秒） | 180 为默认，可按策略时长调整。 |
-| `paths.log_directory` | 日志目录（可相对或绝对路径）。 | 字符串 | 保持可写目录。 |
-| `paths.data_directory` | 数据目录（去重状态、筛选结果等）。 | 字符串 | 与日志分开便于归档。 |
-| `paths.order_history_file` | 历史订单记录文件路径。 | 字符串 | 建议置于 `data_directory` 下。 |
-| `paths.run_state_file` | 运行状态快照文件。 | 字符串 | 默认为 `data/run_state.json`。 |
+| `paths.log_directory` | 日志目录（可相对或绝对路径）。 | 字符串 | 统一写入 `POLYMARKET_MAKER/logs/`。 |
+| `paths.data_directory` | 数据目录（去重状态、筛选结果等）。 | 字符串 | 默认与日志共用 `POLYMARKET_MAKER/logs/`，便于一处收集。 |
+| `paths.order_history_file` | 历史订单记录文件路径。 | 字符串 | 默认写入 `POLYMARKET_MAKER/logs/order_history.jsonl`。 |
+| `paths.run_state_file` | 运行状态快照文件。 | 字符串 | 默认写入 `POLYMARKET_MAKER/logs/run_state.json`。 |
 | `retry_strategy.max_attempts` | 筛选或子任务的最大重试次数。 | 整数 | 3~5。 |
 | `retry_strategy.initial_backoff_seconds` | 首次重试等待秒数。 | 浮点 | 1.0 起步。 |
 | `retry_strategy.backoff_multiplier` | 指数退避倍率。 | 浮点 | 2.0 表示每次翻倍。 |
