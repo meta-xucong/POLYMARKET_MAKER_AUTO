@@ -1,0 +1,26 @@
+{
+  "market_url": "https://polymarket.com/market/example-slug",
+  "timezone": "America/New_York",
+  "deadline_override_ts": null,
+  "disable_deadline_checks": false,
+  "deadline_policy": {
+    "override_choice": null,
+    "disable_deadline": false,
+    "timezone": null
+  },
+  "side": "YES",
+  "order_size": null,
+  "order_size_is_target": true,
+  "sell_mode": "aggressive",
+  "buy_price_threshold": null,
+  "drop_window_minutes": 10,
+  "drop_pct": 0.05,
+  "profit_pct": 0.05,
+  "enable_incremental_drop_pct": false,
+  "incremental_drop_pct_step": 0.0,
+  "countdown": {
+    "minutes_before_end": null,
+    "absolute_time": null,
+    "timezone": null
+  }
+}

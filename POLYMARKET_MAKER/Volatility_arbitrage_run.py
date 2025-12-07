@@ -88,6 +88,11 @@ _REQUEST_RATE_LIMIT_SEC = 1.0
 _last_request_ts = 0.0
 _request_lock = threading.Lock()
 
+DEFAULT_RUN_CONFIG_PATH = os.getenv(
+    "POLY_RUN_CONFIG_PATH",
+    os.path.join(os.path.dirname(__file__), "config", "run_params.json"),
+)
+
 def _enforce_request_rate_limit() -> None:
     global _last_request_ts
     with _request_lock:
@@ -97,6 +102,51 @@ def _enforce_request_rate_limit() -> None:
         if remaining > 0:
             time.sleep(remaining)
         _last_request_ts = time.monotonic()
+
+
+def _safe_load_json(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = json.load(f)
+            if isinstance(content, dict):
+                return content
+            print(f"[WARN] 配置文件 {path} 顶层应为对象，已忽略。")
+            return {}
+    except FileNotFoundError:
+        print(f"[WARN] 未找到配置文件 {path}，将使用内置默认值。")
+        return {}
+    except JSONDecodeError as exc:
+        print(f"[ERR] 读取配置 {path} 失败：{exc}")
+        sys.exit(1)
+
+
+def _coerce_float(val: Any) -> Optional[float]:
+    try:
+        if val is None:
+            return None
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_ratio(val: Any, default: float) -> float:
+    parsed = _coerce_float(val)
+    if parsed is None:
+        return default
+    if parsed > 1:
+        parsed = parsed / 100.0
+    if parsed < 0:
+        print(f"[WARN] 百分比 {val} 不能为负，已回退到默认值 {default}。")
+        return default
+    return parsed
+
+
+def _load_run_config(path: Optional[str]) -> Dict[str, Any]:
+    candidate = path or DEFAULT_RUN_CONFIG_PATH
+    if not os.path.isabs(candidate):
+        candidate = os.path.abspath(candidate)
+    print(f"[CONFIG] 使用配置文件: {candidate}")
+    return _safe_load_json(candidate)
 
 def _strategy_accepts_total_position(strategy: VolArbStrategy) -> bool:
     """Return True when ``strategy.on_buy_filled`` can consume ``total_position``."""
@@ -470,6 +520,31 @@ def _should_offer_common_deadline_options(meta: Optional[Dict[str, Any]]) -> boo
     if not isinstance(end_ts, (int, float)):
         return False
     return not bool(meta.get("end_ts_precise"))
+
+
+def _common_deadline_override(
+    base_date_utc: date, choice: Any, tz_hint: Optional[Any]
+) -> Tuple[Optional[float], bool]:
+    options = {
+        "1": {"label": "12:00 PM ET", "hour": 12, "minute": 0, "tz": "America/New_York", "fallback": -240},
+        "2": {"label": "23:59 ET", "hour": 23, "minute": 59, "tz": "America/New_York", "fallback": -240},
+        "3": {"label": "00:00 UTC", "hour": 0, "minute": 0, "tz": "UTC", "fallback": 0},
+        "4": {"label": "不设定结束时间点", "no_deadline": True},
+    }
+    key = str(choice)
+    if key not in options:
+        return None, False
+    spec = options[key]
+    if spec.get("no_deadline"):
+        return None, True
+    tz_name = tz_hint or spec.get("tz") or "UTC"
+    tzinfo = _get_zoneinfo_or_fallback(tz_name, spec.get("fallback", 0))
+    dt_target = datetime.combine(
+        base_date_utc,
+        dtime(hour=spec.get("hour", 0), minute=spec.get("minute", 0)),
+        tzinfo=tzinfo,
+    )
+    return dt_target.astimezone(timezone.utc).timestamp(), False
 
 
 def _prompt_common_deadline_override(
@@ -1588,7 +1663,7 @@ def _place_sell_fok(client, token_id: str, price: float, size: float) -> Dict[st
 
 
 # ===== 主流程 =====
-def main():
+def main(run_config: Optional[Dict[str, Any]] = None):
     client = _get_client()
     creds_check = _extract_api_creds(client)
     if not creds_check or not creds_check.get("key") or not creds_check.get("secret"):
@@ -1596,14 +1671,26 @@ def main():
         return
     print("[INIT] API 凭证已验证。")
     print("[INIT] ClobClient 就绪。")
-    timezone_override_hint: Optional[Any] = None
-    manual_deadline_override_ts: Optional[float] = None
-    manual_deadline_disabled = False
-    print('请输入 Polymarket 市场 URL：')
-    source = input().strip()
+
+    if run_config is None:
+        run_cfg: Dict[str, Any] = _load_run_config(None)
+    else:
+        run_cfg = run_config
+    source = str(
+        run_cfg.get("market_url")
+        or run_cfg.get("source")
+        or run_cfg.get("url")
+        or ""
+    ).strip()
     if not source:
-        print("[ERR] 未输入，退出。")
+        print("[ERR] 配置未提供市场 URL，退出。")
         return
+
+    timezone_override_hint: Optional[Any] = run_cfg.get("timezone")
+    manual_deadline_override_ts: Optional[float] = _coerce_float(
+        run_cfg.get("deadline_override_ts")
+    )
+    manual_deadline_disabled = bool(run_cfg.get("disable_deadline_checks", False))
     try:
         yes_id, no_id, title, market_meta = _resolve_with_fallback(source)
     except Exception as e:
@@ -1625,13 +1712,8 @@ def main():
             f"{_describe_timezone_hint(tz_hint)}"
         )
     else:
-        print("[WARN] 市场数据未提供时区信息，请选择时区：")
-        print("1) ET（美东时间）\n2) UTC\n直接回车默认选择 1) ET。")
-        tz_choice = input().strip()
-        if tz_choice == "2":
-            timezone_override_hint = "UTC"
-        else:
-            timezone_override_hint = "America/New_York"
+        tz_choice = timezone_override_hint or "America/New_York"
+        timezone_override_hint = tz_choice
         market_meta = _apply_timezone_override_meta(market_meta, timezone_override_hint)
         market_meta = _apply_manual_deadline_override_meta(
             market_meta,
@@ -1639,7 +1721,7 @@ def main():
         )
         tz_hint = market_meta.get("timezone_hint")
         print(
-            "[INFO] 已手动指定市场时区: "
+            "[INFO] 未检测到市场时区，已依据配置指定为: "
             f"{_describe_timezone_hint(tz_hint)}"
         )
 
@@ -1673,23 +1755,35 @@ def main():
         return min(candidates) if candidates else None
 
     market_deadline_ts = _calc_deadline(market_meta)
-    if market_deadline_ts and market_meta.get("end_ts_precise"):
+    deadline_policy = run_cfg.get("deadline_policy") if isinstance(run_cfg, dict) else {}
+    override_choice = None
+    if isinstance(deadline_policy, dict):
+        override_choice = deadline_policy.get("override_choice")
+        try:
+            override_choice = int(override_choice) if override_choice is not None else None
+        except (TypeError, ValueError):
+            override_choice = None
+        manual_deadline_disabled = bool(
+            deadline_policy.get("disable_deadline", manual_deadline_disabled)
+        )
+    deadline_tz_hint = None
+    if isinstance(deadline_policy, dict):
+        deadline_tz_hint = deadline_policy.get("timezone")
+    if manual_deadline_disabled:
+        market_meta = dict(market_meta or {})
+        market_meta.pop("end_ts", None)
+        market_meta.pop("resolved_ts", None)
+        market_deadline_ts = None
+    elif market_deadline_ts and override_choice:
         base_date_utc = datetime.fromtimestamp(
             float(market_deadline_ts), tz=timezone.utc
         ).date()
-        override_ts, deadline_disabled = _prompt_common_deadline_override(
+        override_ts, deadline_disabled = _common_deadline_override(
             base_date_utc,
-            allow_skip=True,
-            intro_text=(
-                "[Q] 已自动识别市场截止时间。如需按常用时区结束时间点覆盖，"
-                "请输入选项编号（直接回车沿用自动截止日期）：\n"
-                "  [1] 12:00 PM ET（金融 / 市场预测类）\n"
-                "  [2] 23:59 ET（天气 / 逐日统计类）\n"
-                "  [3] UTC 00:00（跨时区国际事件）\n"
-                "  [4] 不设定结束时间点"
-            ),
+            override_choice,
+            deadline_tz_hint or tz_hint or timezone_override_hint,
         )
-        manual_deadline_disabled = deadline_disabled
+        manual_deadline_disabled = manual_deadline_disabled or deadline_disabled
         if override_ts is not None:
             manual_deadline_override_ts = override_ts
             market_meta = _apply_manual_deadline_override_meta(
@@ -1702,28 +1796,6 @@ def main():
             market_meta.pop("end_ts", None)
             market_meta.pop("resolved_ts", None)
             market_deadline_ts = None
-    if not manual_deadline_disabled and _should_offer_common_deadline_options(market_meta):
-        base_end_ts = market_meta.get("end_ts")
-        if isinstance(base_end_ts, (int, float)):
-            base_date_utc = datetime.fromtimestamp(
-                float(base_end_ts), tz=timezone.utc
-            ).date()
-            override_ts, deadline_disabled = _prompt_common_deadline_override(
-                base_date_utc
-            )
-            manual_deadline_disabled = deadline_disabled
-            if override_ts is not None:
-                manual_deadline_override_ts = override_ts
-                market_meta = _apply_manual_deadline_override_meta(
-                    market_meta,
-                    manual_deadline_override_ts,
-                )
-                market_deadline_ts = _calc_deadline(market_meta)
-            if manual_deadline_disabled:
-                market_meta = dict(market_meta or {})
-                market_meta.pop("end_ts", None)
-                market_meta.pop("resolved_ts", None)
-                market_deadline_ts = None
     if market_deadline_ts:
         dt_deadline = datetime.fromtimestamp(market_deadline_ts, tz=timezone.utc)
         print(
@@ -1769,149 +1841,79 @@ def main():
 
     _log_profit_floor()
 
-    def _prompt_yes_or_no(message: str, default_yes: bool = True) -> Optional[bool]:
-        print(message)
-        raw = input().strip()
-        if not raw:
-            return default_yes
-        lowered = raw.lower()
-        yes_tokens = {"y", "yes", "1", "true"}
-        no_tokens = {"n", "no", "0", "false"}
-        if lowered in yes_tokens:
-            return True
-        if lowered in no_tokens:
-            return False
-        print("[ERR] 仅接受 y 或 n 输入，退出。")
-        return None
-
-    side_choice = _prompt_yes_or_no(
-        "① 请选择方向（输入 y 表示做多 YES，输入 n 表示做空 NO，直接回车默认 y）："
-    )
-    if side_choice is None:
-        return
-    side = "YES" if side_choice else "NO"
+    side = str(run_cfg.get("side") or "YES").upper()
+    if side not in {"YES", "NO"}:
+        print(f"[WARN] 配置 side={side} 非法，回退为 YES。")
+        side = "YES"
     token_id = yes_id if side == "YES" else no_id
+    print(f"[INIT] 方向: {side} -> token_id={token_id}")
 
-    print("② 请输入买入份数（留空=按 $1 反推）：")
-    size_in = input().strip()
-    manual_order_size: Optional[float] = None
-    manual_size_is_target = False
-    if size_in:
-        try:
-            manual_order_size = float(size_in)
-        except Exception:
-            print("[ERR] 份数非法，退出。")
-            return
-        if manual_order_size is None or manual_order_size <= 0:
-            print("[ERR] 份数必须大于 0，退出。")
-            return
-        target_choice = _prompt_yes_or_no(
-            "③ 是否将该份数视为总持仓目标（扣除已有仓位后补足）？输入 y 表示是，输入 n 表示按单笔下单量执行（默认 y）："
+    manual_order_size: Optional[float] = _coerce_float(run_cfg.get("order_size"))
+    manual_size_is_target = bool(
+        run_cfg.get("order_size_is_target", manual_order_size is not None)
+    )
+    if manual_order_size is not None and manual_order_size <= 0:
+        print("[ERR] 配置的份数必须大于 0，退出。")
+        return
+    if manual_order_size is not None:
+        mode_note = "总持仓目标" if manual_size_is_target else "单笔下单量"
+        print(
+            f"[INIT] 已读取手动份数 {manual_order_size}，模式：{mode_note}。"
         )
-        if target_choice is None:
-            return
-        manual_size_is_target = target_choice
-        if manual_size_is_target:
-            print("[INIT] 手动份数将作为总目标使用，买入时会扣除当前仓位。")
-        else:
-            print("[INIT] 手动份数将直接作为单笔下单量使用，不扣除已有仓位。")
-
-    print("④ 请选择卖出挂单模式：输入 1 为激进分支，输入 2 为保守分支（默认 1）：")
-    sell_mode_in = input().strip()
-    if sell_mode_in == "2":
-        sell_mode = "conservative"
-        print("[INIT] 已选择保守卖出分支。")
     else:
-        sell_mode = "aggressive"
-        print("[INIT] 已选择激进卖出分支。")
-    print("请输入买入触发价（对标 bid，如 0.35，留空表示仅依赖跌幅触发）：")
-    buy_px_in = input().strip()
-    buy_threshold = None
-    if buy_px_in:
-        try:
-            buy_threshold = float(buy_px_in)
-        except Exception:
-            print("[ERR] 触发价非法，退出。")
-            return
+        print("[INIT] 未指定手动份数，将按 $1 反推下单量。")
 
-    print("请输入跌幅窗口分钟数（默认 10）：")
-    drop_window_in = input().strip()
-    try:
-        drop_window = float(drop_window_in) if drop_window_in else 10.0
-    except Exception:
-        print("[ERR] 跌幅窗口非法，退出。")
-        return
+    sell_mode_raw = str(run_cfg.get("sell_mode") or "aggressive").lower()
+    sell_mode = "conservative" if sell_mode_raw == "conservative" else "aggressive"
+    print(f"[INIT] 卖出挂单模式：{sell_mode}")
 
-    print("请输入跌幅触发百分比（默认 5 表示 5%）：")
-    drop_pct_in = input().strip()
-    try:
-        drop_pct = float(drop_pct_in) / 100.0 if drop_pct_in else 0.05
-    except Exception:
-        print("[ERR] 跌幅百分比非法，退出。")
-        return
-
-    print("请输入卖出盈利百分比（默认 5 表示 +5%）：")
-    profit_in = input().strip()
-    try:
-        profit_pct = float(profit_in) / 100.0 if profit_in else 0.05
-    except Exception:
-        print("[ERR] 盈利百分比非法，退出。")
-        return
+    buy_threshold = _coerce_float(run_cfg.get("buy_price_threshold"))
+    drop_window = _coerce_float(run_cfg.get("drop_window_minutes")) or 10.0
+    drop_pct = _normalize_ratio(run_cfg.get("drop_pct"), 0.05)
+    profit_pct = _normalize_ratio(run_cfg.get("profit_pct"), 0.05)
     profit_pct = _enforce_profit_floor(profit_pct)
 
-    print(
-        "是否在每次卖出后抬升下一轮买入的跌幅阈值？"
-        "输入数字（单位%），如 0.1 表示每轮+0.1%；"
-        "直接回车表示不启用递增。"
+    incremental_drop_pct_step = _normalize_ratio(
+        run_cfg.get("incremental_drop_pct_step"), 0.0
     )
-    incremental_step_raw = input().strip()
-    incremental_drop_pct_step = 0.0
-    enable_incremental_drop_pct = False
-    if incremental_step_raw:
-        try:
-            incremental_step_pct = float(incremental_step_raw)
-        except Exception:
-            print("[ERR] 跌幅递增输入非法，退出。")
-            return
-        if incremental_step_pct <= 0:
-            print("[ERR] 跌幅递增数值需大于 0，退出。")
-            return
-        incremental_drop_pct_step = incremental_step_pct / 100.0
-        enable_incremental_drop_pct = True
+    enable_incremental_drop_pct = bool(
+        run_cfg.get("enable_incremental_drop_pct", incremental_drop_pct_step > 0)
+    )
+    if not enable_incremental_drop_pct:
+        incremental_drop_pct_step = 0.0
+
+    if enable_incremental_drop_pct:
         print(
-            f"[INIT] 已启用卖出后递增买入阈值功能，步长 {incremental_step_pct:.4f}% 。"
+            f"[INIT] 卖出后递增买入阈值已启用，步长 {incremental_drop_pct_step * 100:.4f}%。"
         )
     else:
-        print("[INIT] 未设定递增跌幅阈值，保持固定阈值运行。")
+        print("[INIT] 未启用递增跌幅阈值，保持固定阈值运行。")
 
     sell_only_start_ts: Optional[float] = None
-    countdown_timezone_hint = tz_hint
-    if market_deadline_ts:
-        tz_desc = _describe_timezone_hint(countdown_timezone_hint) or "UTC"
-        print(
-            f"请输入倒计时开始时间（基于 {tz_desc}）。"
-            "可输入：\n"
-            "  - 绝对时间，如 2024-01-01 12:30:00 或 ISO8601；\n"
-            "  - 提前的分钟数，如输入 30 表示截止前 30 分钟进入仅卖出模式；\n"
-            "留空表示不启用倒计时卖出保护。"
+    countdown_cfg = run_cfg.get("countdown") if isinstance(run_cfg, dict) else {}
+    countdown_timezone_hint = (
+        countdown_cfg.get("timezone") if isinstance(countdown_cfg, dict) else None
+    ) or tz_hint
+    if market_deadline_ts and isinstance(countdown_cfg, dict):
+        countdown_in: Optional[Any] = countdown_cfg.get("absolute_time") or countdown_cfg.get(
+            "timestamp"
         )
-        countdown_in = input().strip()
-        if countdown_in:
+        used_minutes = False
+        if countdown_in is None:
+            countdown_in = countdown_cfg.get("minutes_before_end")
+            used_minutes = countdown_in is not None
+        if countdown_in is not None:
             parsed_ts: Optional[float] = None
-            used_minutes = False
-            if re.search(r"[A-Za-z:/-]", countdown_in):
-                parsed_ts = _parse_timestamp(countdown_in, countdown_timezone_hint)
-            else:
+            if used_minutes:
                 try:
                     minutes_before = float(countdown_in)
                     parsed_ts = market_deadline_ts - minutes_before * 60.0
-                    used_minutes = True
                 except Exception:
-                    parsed_ts = _parse_timestamp(
-                        countdown_in, countdown_timezone_hint
-                    )
+                    parsed_ts = None
+            if parsed_ts is None:
+                parsed_ts = _parse_timestamp(str(countdown_in), countdown_timezone_hint)
             if not parsed_ts:
-                print("[ERR] 无法解析倒计时开始时间，程序终止。")
+                print("[ERR] 倒计时开始时间解析失败，程序终止。")
                 return
             if parsed_ts >= market_deadline_ts:
                 print("[ERR] 倒计时开始时间必须早于市场结束时间，程序终止。")
@@ -3239,4 +3241,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else None
+    cfg = _load_run_config(cfg_path)
+    main(cfg)
