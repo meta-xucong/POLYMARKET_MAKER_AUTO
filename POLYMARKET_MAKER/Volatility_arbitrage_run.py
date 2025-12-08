@@ -2733,9 +2733,9 @@ def main(run_config: Optional[Dict[str, Any]] = None):
             size=sell_filled if sell_filled > 0 else None,
             remaining=remaining_for_strategy,
         )
-        sold_out = remaining_for_strategy is None
+        sold_out = remaining_for_strategy is None or sell_remaining <= eps
         if sold_out:
-            block_until = time.time() + 60.0
+            block_until = time.time() + 180.0
             position_sync_block_until = max(position_sync_block_until, block_until)
             next_position_sync_ts = max(next_position_sync, position_sync_block_until)
             next_position_sync = next_position_sync_ts
