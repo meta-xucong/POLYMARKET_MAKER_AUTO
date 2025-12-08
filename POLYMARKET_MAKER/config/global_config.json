@@ -5,10 +5,10 @@
     "task_timeout_seconds": 180
   },
   "paths": {
-    "log_directory": "./POLYMARKET_MAKER/logs",
-    "data_directory": "./POLYMARKET_MAKER/logs",
-    "order_history_file": "./POLYMARKET_MAKER/logs/order_history.jsonl",
-    "run_state_file": "./POLYMARKET_MAKER/logs/run_state.json"
+    "log_directory": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs",
+    "data_directory": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs",
+    "order_history_file": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logsorder_history.jsonl",
+    "run_state_file": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/run_state.json"
   },
   "retry_strategy": {
     "max_attempts": 5,
