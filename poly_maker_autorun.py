@@ -495,11 +495,19 @@ class AutoRunManager:
             running = sum(1 for t in self.tasks.values() if t.is_running())
 
     def _build_run_config(self, topic_id: str) -> Dict[str, Any]:
-        base_template = json.loads(json.dumps(self.run_params_template or {}))
-        base = self.strategy_defaults.get("default", {}) or {}
-        topic_overrides = (self.strategy_defaults.get("topics") or {}).get(
+        base_template_raw = json.loads(json.dumps(self.run_params_template or {}))
+        base_template = {k: v for k, v in base_template_raw.items() if v is not None}
+
+        base_raw = self.strategy_defaults.get("default", {}) or {}
+        base = {k: v for k, v in base_raw.items() if v is not None}
+
+        topic_overrides_raw = (self.strategy_defaults.get("topics") or {}).get(
             topic_id, {}
         )
+        topic_overrides = {
+            k: v for k, v in topic_overrides_raw.items() if v is not None
+        }
+
         merged = {**base_template, **base, **topic_overrides}
 
         topic_info = self.topic_details.get(topic_id, {})
