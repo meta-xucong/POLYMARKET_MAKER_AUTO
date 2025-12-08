@@ -909,7 +909,10 @@ def run_filter_once(
     topics: List[Dict[str, Any]] = []
     for ms in result.chosen:
         highlight_sides = highlight_map.get(ms.slug, [])
-        preferred_side = highlight_sides[0] if highlight_sides else None
+        if not highlight_sides:
+            # 仅保留命中高亮条件的市场，避免不满足高亮口径的条目进入 topics 列表
+            continue
+        preferred_side = highlight_sides[0]
         topics.append(
             {
                 "slug": ms.slug,
