@@ -147,6 +147,23 @@ def _normalize_ratio(val: Any, default: float) -> float:
     return parsed
 
 
+def _resolve_side(cfg: Dict[str, Any]) -> str:
+    raw_side = cfg.get("side")
+    if raw_side is None:
+        raw_side = cfg.get("preferred_side")
+    if raw_side is None:
+        candidates = cfg.get("highlight_sides")
+        if isinstance(candidates, (list, tuple)) and candidates:
+            raw_side = candidates[0]
+    if raw_side is None:
+        raise ValueError("未提供下单方向 side，且未能从 preferred_side/highlight_sides 推断。")
+
+    side_normalized = str(raw_side).upper()
+    if side_normalized not in {"YES", "NO"}:
+        raise ValueError(f"配置 side={side_normalized} 非法，必须为 YES 或 NO。")
+    return side_normalized
+
+
 def _load_run_config(path: Optional[str]) -> Dict[str, Any]:
     candidate = path or DEFAULT_RUN_CONFIG_PATH
     if not os.path.isabs(candidate):
@@ -1930,10 +1947,11 @@ def main(run_config: Optional[Dict[str, Any]] = None):
 
     _log_profit_floor()
 
-    side = str(run_cfg.get("side") or "YES").upper()
-    if side not in {"YES", "NO"}:
-        print(f"[WARN] 配置 side={side} 非法，回退为 YES。")
-        side = "YES"
+    try:
+        side = _resolve_side(run_cfg)
+    except ValueError as side_exc:
+        print(f"[ERR] {side_exc}")
+        return
     token_id = yes_id if side == "YES" else no_id
     print(f"[INIT] 方向: {side} -> token_id={token_id}")
 

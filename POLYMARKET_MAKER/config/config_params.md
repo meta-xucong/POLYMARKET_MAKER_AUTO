@@ -16,7 +16,7 @@
 | `deadline_policy.timezone` | 应用默认截止时间时的时区。 | IANA 时区名称 | 与 `default_deadline` 保持一致。 |
 | `deadline_policy.default_deadline.time` | 当需要回退到默认截止时间时使用的“时:分”字符串，可写 `HH:MM` 或 `HH.MM`。 | 字符串（24 小时制） | 例如 `12:59`。 |
 | `deadline_policy.default_deadline.timezone` | 默认截止时间对应的时区。 | IANA 时区名称 | 例如 `America/New_York`。 |
-| `side` | 下单方向，`YES` 或 `NO`。非法值会回退为 `YES`。【F:POLYMARKET_MAKER/Volatility_arbitrage_run.py†L1933-L1938】 | 字符串（不区分大小写） | 必填；建议与目标 token 一致。 |
+| `side` | 下单方向，`YES` 或 `NO`；缺失时会尝试使用 `preferred_side` 或 `highlight_sides[0]`，仍无法确定或值非法时直接报错退出。【F:POLYMARKET_MAKER/Volatility_arbitrage_run.py†L153-L172】【F:POLYMARKET_MAKER/Volatility_arbitrage_run.py†L1941-L1947】 | 字符串（不区分大小写） | 必填；建议与目标 token 一致。 |
 | `order_size` | 手动指定份额，配合 `order_size_is_target` 判断含义。 | 正数 | 留空则按 $1 等额推算。 |
 | `order_size_is_target` | 为真时将 `order_size` 视为目标总持仓，否则视为单笔下单量。【F:POLYMARKET_MAKER/Volatility_arbitrage_run.py†L1940-L1950】 | 布尔 | 需要限制总敞口时设为 `true`。 |
 | `sell_mode` | 卖出挂单策略：`aggressive` 更靠近盘口，`conservative` 稍远。 | 枚举字符串 | `aggressive`/`conservative`。 |
