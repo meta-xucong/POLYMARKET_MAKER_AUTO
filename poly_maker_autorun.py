@@ -47,6 +47,8 @@ DEFAULT_GLOBAL_CONFIG = {
     "runtime_status_path": str(MAKER_ROOT / "data" / "autorun_status.json"),
 }
 
+FILTER_CONFIG_RELOAD_INTERVAL_SEC = 3600
+
 
 def _topic_id_from_entry(entry: Any) -> str:
     """从筛选结果条目中提取 topic_id/slug，兼容字符串或 dict。"""
@@ -392,6 +394,8 @@ class AutoRunManager:
         self.pending_topics: List[str] = []
         self._next_topics_refresh: float = 0.0
         self._next_status_dump: float = 0.0
+        self._next_filter_reload: float = 0.0
+        self._filter_conf_mtime: Optional[float] = None
         self.status_path = self.config.runtime_status_path
 
     # ========== 核心循环 ==========
@@ -407,6 +411,7 @@ class AutoRunManager:
                     self._process_commands()
                     self._poll_tasks()
                     self._schedule_pending_topics()
+                    self._maybe_reload_filter_config(now)
                     if now >= self._next_topics_refresh:
                         self._refresh_topics()
                         self._next_topics_refresh = now + self.config.topics_poll_sec
@@ -748,6 +753,35 @@ class AutoRunManager:
                 self._terminate_task(task, reason="cleanup")
         # 写回 handled_topics，确保最新状态落盘
         write_handled_topics(self.config.handled_topics_path, self.handled_topics)
+
+    def _maybe_reload_filter_config(self, now: Optional[float] = None) -> None:
+        if now is None:
+            now = time.time()
+        if now < self._next_filter_reload:
+            return
+
+        self._next_filter_reload = now + FILTER_CONFIG_RELOAD_INTERVAL_SEC
+
+        try:
+            current_mtime = self.config.filter_params_path.stat().st_mtime
+        except OSError:
+            print(
+                f"[WARN] 无法访问筛选配置文件：{self.config.filter_params_path}，保留现有配置。"
+            )
+            return
+
+        if self._filter_conf_mtime is not None and current_mtime <= self._filter_conf_mtime:
+            return
+
+        try:
+            filter_conf_raw = _load_json_file(self.config.filter_params_path)
+            self.filter_config = FilterConfig.from_dict(filter_conf_raw)
+            self._filter_conf_mtime = current_mtime
+            print(
+                f"[CONFIG] 已重新加载筛选配置（每 {FILTER_CONFIG_RELOAD_INTERVAL_SEC // 60:.0f} 分钟轮询一次）。"
+            )
+        except Exception as exc:  # pragma: no cover - 文件读取/解析异常
+            print(f"[WARN] 重载筛选配置失败，将继续使用旧配置：{exc}")
 
     def _restore_runtime_status(self) -> None:
         """尝试从上次运行的状态文件恢复待处理队列等信息。"""
