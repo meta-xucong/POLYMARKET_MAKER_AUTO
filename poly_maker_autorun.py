@@ -105,7 +105,11 @@ def _scale_order_size_by_volume(
         return base_size
 
     vol_ratio = max(total_volume / effective_base_volume, 1.0)
-    weight = 1.0 + growth_factor * math.log(vol_ratio)
+    # 双重对数放缓增速：
+    #   - 低于 base_volume 时不缩量；
+    #   - 略高于基准时仍有轻微放大；
+    #   - 极高成交量的增量快速衰减，避免下单量远超基础值。
+    weight = 1.0 + growth_factor * math.log1p(math.log(vol_ratio))
     weighted_size = base_size * weight
     return _ceil_to_precision(weighted_size, decimals)
 
