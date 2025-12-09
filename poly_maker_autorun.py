@@ -713,6 +713,7 @@ class AutoRunManager:
                 cmd = self.command_queue.get_nowait()
             except queue.Empty:
                 break
+            print(f"[CMD] processing: {cmd}")
             self._handle_command(cmd.strip())
 
     def _handle_command(self, cmd: str) -> None:
@@ -923,11 +924,25 @@ class AutoRunManager:
                     cmd = input("poly> ")
                 except EOFError:
                     cmd = "exit"
+                except Exception as exc:  # pragma: no cover - 保护交互循环不被意外异常终止
+                    print(f"[ERROR] command loop input failed: {exc}")
+                    traceback.print_exc()
+                    time.sleep(self.config.command_poll_sec)
+                    continue
+                # 立刻反馈收到的命令，避免在日志刷屏时用户误以为命令未被捕获
+                if cmd:
+                    print(f"[CMD] received: {cmd}")
+                else:
+                    # 空行依旧入队，后续会在 _handle_command 里被忽略
+                    print("[CMD] received: <empty>")
                 self.enqueue_command(cmd)
                 time.sleep(self.config.command_poll_sec)
         except KeyboardInterrupt:
             print("\n[WARN] Ctrl+C detected, stopping...")
             self.stop_event.set()
+        except Exception as exc:  # pragma: no cover - 防御性保护
+            print(f"[ERROR] command loop crashed: {exc}")
+            traceback.print_exc()
 
 
 # =====================
