@@ -140,6 +140,7 @@ class MarketSnapshot:
     slug: str
     title: str
     raw: Dict[str, Any] = field(default_factory=dict)
+    event_id: Optional[str] = None
     yes: OutcomeSnapshot = field(default_factory=lambda: OutcomeSnapshot(name='YES'))
     no: OutcomeSnapshot = field(default_factory=lambda: OutcomeSnapshot(name='NO'))
     liquidity: Optional[float] = None
@@ -276,11 +277,28 @@ def _is_arch_legacy_nonclob(raw: Dict[str, Any], legacy_end_days: int) -> bool:
             pass
     return False
 
+def _extract_event_id(raw: Dict[str, Any]) -> Optional[str]:
+    for k in (
+        "eventId",
+        "event_id",
+        "eventID",
+        "eventSlug",
+        "event_slug",
+    ):
+        v = raw.get(k)
+        if v:
+            try:
+                return str(v)
+            except Exception:
+                pass
+    return None
+
 def _parse_market(raw: Dict[str, Any]) -> MarketSnapshot:
     title = raw.get("question") or raw.get("title") or ""
     slug  = raw.get("slug") or ""
     ms = MarketSnapshot(slug=slug, title=title, raw=raw)
 
+    ms.event_id = _extract_event_id(raw)
     ms.active = _coerce_bool(raw.get("active"))
     ms.closed = _coerce_bool(raw.get("closed"))
     ms.resolved = _coerce_bool(raw.get("resolved"))
@@ -616,6 +634,38 @@ def _highlight_label() -> str:
             f"& 总交易量≥{int(HIGHLIGHT_MIN_TOTAL_VOLUME)}USDC & 单边点差≤{HIGHLIGHT_MAX_ASK_DIFF:.2f} & 非黑名单")
 
 
+def _event_key(ms: MarketSnapshot) -> str:
+    return ms.event_id or ms.slug
+
+
+def _outcome_price(snap: OutcomeSnapshot) -> float:
+    if snap.ask is not None:
+        try:
+            return float(snap.ask)
+        except Exception:
+            pass
+    if snap.bid is not None:
+        try:
+            return float(snap.bid)
+        except Exception:
+            pass
+    return -1.0
+
+
+def _best_outcome(hits: List[Tuple[OutcomeSnapshot, float]]) -> Tuple[OutcomeSnapshot, float]:
+    def _dir_rank(name: Optional[str]) -> int:
+        return 0 if (name or "").upper() == "NO" else 1
+
+    ranked = sorted(
+        hits,
+        key=lambda item: (
+            _dir_rank(item[0].name),
+            -_outcome_price(item[0]),
+        ),
+    )
+    return ranked[0]
+
+
 # -------------------------------
 # 面向自动化脚本的封装
 # -------------------------------
@@ -685,10 +735,41 @@ def collect_filter_results(
         else:
             rejects.append((ms, reason))
 
+    event_candidates: Dict[str, List[Tuple[MarketSnapshot, OutcomeSnapshot, float, float]]] = {}
+    event_reject_slugs: set[str] = set()
     highlights: List[HighlightedOutcome] = []
+
     for ms in chosen:
-        for snap, hours in _highlight_outcomes(ms):
-            highlights.append(HighlightedOutcome(market=ms, outcome=snap, hours_to_end=hours))
+        hits = _highlight_outcomes(ms)
+        if not hits:
+            continue
+        snap, hours = _best_outcome(hits)
+        ek = _event_key(ms)
+        event_candidates.setdefault(ek, []).append(
+            (ms, snap, hours, _outcome_price(snap))
+        )
+
+    for ek, cand_list in event_candidates.items():
+        cand_sorted = sorted(
+            cand_list,
+            key=lambda item: (
+                0 if (item[1].name or "").upper() == "NO" else 1,
+                -item[3],
+                item[0].slug,
+            ),
+        )
+
+        best_ms, best_snap, best_hours, _ = cand_sorted[0]
+        highlights.append(
+            HighlightedOutcome(market=best_ms, outcome=best_snap, hours_to_end=best_hours)
+        )
+
+        for ms, _, _, _ in cand_sorted[1:]:
+            event_reject_slugs.add(ms.slug)
+            rejects.append((ms, f"同事件已选更优市场（event={ek}）"))
+
+    if event_reject_slugs:
+        chosen = [ms for ms in chosen if ms.slug not in event_reject_slugs]
 
     return FilterResult(
         total_markets=len(mkts_raw),
