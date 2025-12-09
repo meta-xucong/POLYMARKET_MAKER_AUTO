@@ -104,8 +104,12 @@ def _scale_order_size_by_volume(
     if effective_base_volume <= 0:
         return base_size
 
+    effective_growth = max(growth_factor, 0.0)
     vol_ratio = max(total_volume / effective_base_volume, 1.0)
-    weight = 1.0 + growth_factor * math.log(vol_ratio)
+    # 使用对数增长控制放大：
+    #   - base_volume 附近仅有轻微提升；
+    #   - 成交量每提升 10 倍仅线性增加 growth_factor，边际效用递减。
+    weight = 1.0 + effective_growth * math.log10(vol_ratio)
     weighted_size = base_size * weight
     return _ceil_to_precision(weighted_size, decimals)
 
@@ -621,11 +625,15 @@ class AutoRunManager:
 
         base_order_size = _coerce_float(merged.get("order_size"))
         total_volume = _coerce_float(topic_info.get("total_volume"))
+        volume_growth_factor = _coerce_float(merged.get("volume_growth_factor"))
         if base_order_size is not None and total_volume is not None:
             scaled_size = _scale_order_size_by_volume(
                 base_order_size,
                 total_volume,
                 base_volume=self._get_order_base_volume(),
+                growth_factor=volume_growth_factor
+                if volume_growth_factor is not None and volume_growth_factor > 0
+                else 0.5,
             )
             merged["order_size"] = scaled_size
         return merged
