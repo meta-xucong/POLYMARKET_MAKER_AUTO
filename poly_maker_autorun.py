@@ -726,6 +726,7 @@ class AutoRunManager:
 
     def _handle_command(self, cmd: str) -> None:
         if not cmd:
+            print("[CMD] 忽略空命令（可能未正确捕获输入或输入仅为空白）")
             return
         if cmd in {"quit", "exit"}:
             print("[CHOICE] exit requested")
