@@ -963,6 +963,8 @@ class AutoRunManager:
                     # 空行依旧入队，后续会在 _handle_command 里被忽略
                     print("[CMD] received: <empty>")
                 self.enqueue_command(cmd)
+                # 轻微休眠，防止输入为空或重复换行时产生过多提示刷屏
+                time.sleep(self.config.command_poll_sec)
         except KeyboardInterrupt:
             print("\n[WARN] Ctrl+C detected, stopping...")
             self.stop_event.set()
