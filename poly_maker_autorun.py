@@ -360,6 +360,8 @@ class TopicTask:
     config_path: Optional[Path] = None
     log_excerpt: str = ""
     restart_attempts: int = 0
+    no_restart: bool = False
+    end_reason: Optional[str] = None
 
     def heartbeat(self, message: str) -> None:
         self.last_heartbeat = time.time()
@@ -434,15 +436,27 @@ class AutoRunManager:
                 task.status = "running"
                 task.last_heartbeat = time.time()
                 self._update_log_excerpt(task)
+                if self._log_indicates_market_end(task):
+                    task.status = "ended"
+                    task.no_restart = True
+                    task.end_reason = "market closed"
+                    task.heartbeat("market end detected from log")
+                    print(
+                        f"[AUTO] topic={task.topic_id} 日志显示市场已结束，自动结束该话题。"
+                    )
+                    self._terminate_task(task, reason="market closed (auto)")
                 continue
             self._handle_process_exit(task, rc)
 
     def _handle_process_exit(self, task: TopicTask, rc: int) -> None:
         task.process = None
-        if task.status not in {"stopped", "exited", "error"}:
+        if task.status not in {"stopped", "exited", "error", "ended"}:
             task.status = "exited" if rc == 0 else "error"
         task.heartbeat(f"process finished rc={rc}")
         self._update_log_excerpt(task)
+
+        if task.no_restart:
+            return
 
         if rc != 0:
             max_retries = max(0, int(self.config.process_start_retries))
@@ -473,6 +487,19 @@ class AutoRunManager:
             task.log_excerpt = "\n".join(lines[-5:])
         except OSError as exc:  # pragma: no cover - 文件访问异常
             task.log_excerpt = f"<log read error: {exc}>"
+
+    def _log_indicates_market_end(self, task: TopicTask) -> bool:
+        excerpt = (task.log_excerpt or "").lower()
+        if not excerpt:
+            return False
+        patterns = (
+            "[market] 已确认市场结束",
+            "[market] 市场结束",
+            "[market] 达到市场截止时间",
+            "[market] 收到市场关闭事件",
+            "[exit] 最终状态",
+        )
+        return any(p.lower() in excerpt for p in patterns)
 
     def _schedule_pending_topics(self) -> None:
         running = sum(1 for t in self.tasks.values() if t.is_running())
@@ -678,7 +705,8 @@ class AutoRunManager:
                     proc.wait(timeout=1.0)
                 except Exception as exc:  # pragma: no cover - kill 失败
                     print(f"[WARN] 无法强杀 topic {task.topic_id}: {exc}")
-        task.status = task.status if task.status in {"error"} else "stopped"
+        if task.status not in {"error", "ended"}:
+            task.status = "stopped"
         task.heartbeat(reason)
 
     def _refresh_topics(self) -> None:
