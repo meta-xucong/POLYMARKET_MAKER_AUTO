@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import queue
 import signal
 import subprocess
@@ -48,6 +49,7 @@ DEFAULT_GLOBAL_CONFIG = {
 }
 
 FILTER_CONFIG_RELOAD_INTERVAL_SEC = 3600
+ORDER_SIZE_DECIMALS = 4  # Polymarket 下单数量精度（按买单精度取整）
 
 
 def _topic_id_from_entry(entry: Any) -> str:
@@ -62,6 +64,50 @@ def _topic_id_from_entry(entry: Any) -> str:
 
 def _safe_topic_filename(topic_id: str) -> str:
     return topic_id.replace("/", "_").replace("\\", "_")
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            raw = value.replace(",", "").strip()
+            if not raw:
+                return None
+            return float(raw)
+    except Exception:
+        return None
+    return None
+
+
+def _ceil_to_precision(value: float, decimals: int) -> float:
+    factor = 10 ** decimals
+    return math.ceil(value * factor - 1e-12) / factor
+
+
+def _scale_order_size_by_volume(
+    base_size: float,
+    total_volume: float,
+    *,
+    base_volume: Optional[float] = None,
+    growth_factor: float = 0.5,
+    decimals: int = ORDER_SIZE_DECIMALS,
+) -> float:
+    """根据市场成交量对基础下单份数进行递增（边际递减）。"""
+
+    if base_size <= 0 or total_volume <= 0:
+        return base_size
+
+    effective_base_volume = _coerce_float(base_volume) or total_volume
+    if effective_base_volume <= 0:
+        return base_size
+
+    vol_ratio = max(total_volume / effective_base_volume, 1.0)
+    weight = 1.0 + growth_factor * math.log(vol_ratio)
+    weighted_size = base_size * weight
+    return _ceil_to_precision(weighted_size, decimals)
 
 
 def _load_json_file(path: Path) -> Dict[str, Any]:
@@ -526,6 +572,14 @@ class AutoRunManager:
                 self.pending_topics.append(topic_id)
             running = sum(1 for t in self.tasks.values() if t.is_running())
 
+    def _get_order_base_volume(self) -> Optional[float]:
+        highlight_conf = getattr(self.filter_config, "highlight", None)
+        base_volume = getattr(highlight_conf, "min_total_volume", None)
+        base_volume = _coerce_float(base_volume)
+        if base_volume is None or base_volume <= 0:
+            return None
+        return base_volume
+
     def _build_run_config(self, topic_id: str) -> Dict[str, Any]:
         base_template_raw = json.loads(json.dumps(self.run_params_template or {}))
         base_template = {k: v for k, v in base_template_raw.items() if v is not None}
@@ -564,6 +618,16 @@ class AutoRunManager:
             merged["side"] = preferred_side
         if highlight_sides:
             merged["highlight_sides"] = highlight_sides
+
+        base_order_size = _coerce_float(merged.get("order_size"))
+        total_volume = _coerce_float(topic_info.get("total_volume"))
+        if base_order_size is not None and total_volume is not None:
+            scaled_size = _scale_order_size_by_volume(
+                base_order_size,
+                total_volume,
+                base_volume=self._get_order_base_volume(),
+            )
+            merged["order_size"] = scaled_size
         return merged
 
     def _start_topic_process(self, topic_id: str) -> bool:
