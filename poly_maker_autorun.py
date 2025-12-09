@@ -12,6 +12,7 @@ import concurrent.futures
 import json
 import math
 import queue
+import select
 import signal
 import subprocess
 import sys
@@ -928,9 +929,26 @@ class AutoRunManager:
     # ========== 入口方法 ==========
     def command_loop(self) -> None:
         try:
+            prompt_shown = False
             while not self.stop_event.is_set():
                 try:
-                    cmd = input("poly> ")
+                    if not prompt_shown:
+                        # 主动刷新提示符，避免被后台日志刷屏覆盖
+                        print("poly> ", end="", flush=True)
+                        prompt_shown = True
+
+                    ready, _, _ = select.select(
+                        [sys.stdin], [], [], self.config.command_poll_sec
+                    )
+                    if not ready:
+                        continue
+
+                    line = sys.stdin.readline()
+                    if line == "":
+                        cmd = "exit"
+                    else:
+                        cmd = line.rstrip("\n")
+                    prompt_shown = False
                 except EOFError:
                     cmd = "exit"
                 except Exception as exc:  # pragma: no cover - 保护交互循环不被意外异常终止
@@ -945,7 +963,6 @@ class AutoRunManager:
                     # 空行依旧入队，后续会在 _handle_command 里被忽略
                     print("[CMD] received: <empty>")
                 self.enqueue_command(cmd)
-                time.sleep(self.config.command_poll_sec)
         except KeyboardInterrupt:
             print("\n[WARN] Ctrl+C detected, stopping...")
             self.stop_event.set()
