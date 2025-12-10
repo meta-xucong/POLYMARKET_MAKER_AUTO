@@ -40,16 +40,21 @@ def _now() -> str:
     from datetime import datetime
     return datetime.now().strftime("%H:%M:%S")
 
-def ws_watch_by_ids(asset_ids: List[str],
-                    label: str = "",
-                    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-                    verbose: bool = False,
-                    stop_event: Optional[threading.Event] = None):
+def ws_watch_by_ids(
+    asset_ids: List[str],
+    label: str = "",
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    *,
+    on_state: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    verbose: bool = False,
+    stop_event: Optional[threading.Event] = None,
+):
     """
     只负责：连接 → 订阅 → 将 WS 事件回调给 on_event（逐条 dict）。
     - asset_ids: 订阅的 token_ids（字符串）
     - label: 可选，仅用于启动打印（不参与逻辑）
     - on_event: 回调函数，参数是一条事件（dict）。若服务端下发 list，将按条回调。
+    - on_state: 连接状态通知，state in {open, closed, error, silence}
     - verbose: 默认 False。为 True 时打印 OPEN/SUB/ERROR/CLOSED 及无回调时的事件。
     """
     ids = [str(x) for x in asset_ids if x]
@@ -66,6 +71,7 @@ def ws_watch_by_ids(asset_ids: List[str],
 
     reconnect_delay = 1
     max_reconnect_delay = 60
+    silence_timeout = 60  # 秒，超过则主动重连以避免卡死
 
     headers = [
         "Origin: https://polymarket.com",
@@ -74,14 +80,28 @@ def ws_watch_by_ids(asset_ids: List[str],
 
     while not stop_event.is_set():
         ping_stop = {"v": False}
+        silence_guard_stop = {"v": False}
+
+        def _notify(state: str, info: Optional[Dict[str, Any]] = None) -> None:
+            if on_state is None:
+                return
+            payload = info or {}
+            try:
+                on_state(state, payload)
+            except Exception:
+                pass
+
+        last_event_ts = time.monotonic()
 
         def on_open(ws):
-            nonlocal reconnect_delay
+            nonlocal reconnect_delay, last_event_ts
             if verbose:
                 print(f"[{_now()}][WS][OPEN] -> {WS_BASE+'/ws/'+CHANNEL}")
             payload = {"type": CHANNEL, "assets_ids": ids}
             ws.send(json.dumps(payload))
             reconnect_delay = 1
+            last_event_ts = time.monotonic()
+            _notify("open", {"label": label, "asset_ids": ids})
 
             # 文本心跳 PING（与底层 ping 帧并行存在）
             def _ping():
@@ -91,14 +111,41 @@ def ws_watch_by_ids(asset_ids: List[str],
                         time.sleep(10)
                     except Exception:
                         break
+
             threading.Thread(target=_ping, daemon=True).start()
 
+            def _silence_guard():
+                while not silence_guard_stop["v"] and not stop_event.is_set():
+                    time.sleep(5)
+                    if stop_event.is_set() or silence_guard_stop["v"]:
+                        break
+                    if time.monotonic() - last_event_ts < silence_timeout:
+                        continue
+                    if verbose:
+                        print(
+                            f"[{_now()}][WS][SILENCE] {label or ids} {silence_timeout}s 无消息，主动重连。"
+                        )
+                    _notify(
+                        "silence",
+                        {"label": label, "asset_ids": ids, "timeout": silence_timeout},
+                    )
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                    break
+
+            threading.Thread(target=_silence_guard, daemon=True).start()
+
         def on_message(ws, message):
+            nonlocal last_event_ts
             # 忽略非 JSON 文本（如 PONG）
             try:
                 data = json.loads(message)
             except Exception:
                 return
+
+            last_event_ts = time.monotonic()
 
             # 无回调：仅在 verbose=True 时打印，否则静默
             if on_event is None:
@@ -123,11 +170,17 @@ def ws_watch_by_ids(asset_ids: List[str],
         def on_error(ws, error):
             if verbose:
                 print(f"[{_now()}][WS][ERROR] {error}")
+            _notify("error", {"label": label, "error": str(error)})
 
         def on_close(ws, status_code, msg):
             ping_stop["v"] = True
+            silence_guard_stop["v"] = True
             if verbose:
                 print(f"[{_now()}][WS][CLOSED] {status_code} {msg}")
+            _notify(
+                "closed",
+                {"label": label, "status_code": status_code, "message": msg},
+            )
 
         wsa = websocket.WebSocketApp(
             WS_BASE + "/ws/" + CHANNEL,
@@ -146,10 +199,13 @@ def ws_watch_by_ids(asset_ids: List[str],
             )
         except Exception as exc:
             ping_stop["v"] = True
+            silence_guard_stop["v"] = True
             if verbose:
                 print(f"[{_now()}][WS][EXCEPTION] {exc}")
+            _notify("error", {"label": label, "error": str(exc)})
         finally:
             ping_stop["v"] = True
+            silence_guard_stop["v"] = True
 
         if stop_event.is_set():
             break

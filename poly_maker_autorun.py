@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import json
 import math
+import random
 import queue
 import select
 import signal
@@ -46,6 +47,7 @@ DEFAULT_GLOBAL_CONFIG = {
     "process_start_retries": 1,
     "process_retry_delay_sec": 2.0,
     "process_graceful_timeout_sec": 5.0,
+    "process_stagger_max_sec": 0.5,
     "runtime_status_path": str(MAKER_ROOT / "data" / "autorun_status.json"),
 }
 
@@ -191,6 +193,7 @@ class GlobalConfig:
     process_graceful_timeout_sec: float = DEFAULT_GLOBAL_CONFIG[
         "process_graceful_timeout_sec"
     ]
+    process_stagger_max_sec: float = DEFAULT_GLOBAL_CONFIG["process_stagger_max_sec"]
     runtime_status_path: Path = field(
         default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["runtime_status_path"])
     )
@@ -269,6 +272,9 @@ class GlobalConfig:
                 merged.get(
                     "process_graceful_timeout_sec", cls.process_graceful_timeout_sec
                 )
+            ),
+            process_stagger_max_sec=float(
+                merged.get("process_stagger_max_sec", cls.process_stagger_max_sec)
             ),
             runtime_status_path=runtime_status_path,
         )
@@ -679,6 +685,15 @@ class AutoRunManager:
         except OSError as exc:  # pragma: no cover - 文件系统异常
             print(f"[ERROR] 无法创建日志文件 {log_path}: {exc}")
             return False
+
+        max_stagger = max(0.0, float(self.config.process_stagger_max_sec))
+        if max_stagger > 0:
+            delay = random.uniform(0, max_stagger)
+            if delay > 0:
+                print(
+                    f"[SCHEDULE] topic={topic_id} 启动前随机延迟 {delay:.2f}s 以错峰运行"
+                )
+                time.sleep(delay)
 
         cmd = [
             sys.executable,
