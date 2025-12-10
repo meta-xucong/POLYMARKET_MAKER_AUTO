@@ -794,6 +794,17 @@ class AutoRunManager:
         if not task:
             print(f"[WARN] topic {topic_id} 不在运行列表中")
             return
+        task.no_restart = True
+        task.end_reason = "stopped by user"
+        # 标记为已处理，避免后续 refresh 把同一话题再次入队
+        if topic_id not in self.handled_topics:
+            self.handled_topics.add(topic_id)
+            write_handled_topics(self.config.handled_topics_path, self.handled_topics)
+        if topic_id in self.pending_topics:
+            try:
+                self.pending_topics.remove(topic_id)
+            except ValueError:
+                pass
         self._terminate_task(task, reason="stopped by user")
         print(f"[CHOICE] stop topic={topic_id}")
 
