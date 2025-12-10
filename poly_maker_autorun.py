@@ -463,6 +463,7 @@ class AutoRunManager:
                     self._poll_tasks()
                     self._schedule_pending_topics()
                     self._maybe_reload_filter_config(now)
+                    self._purge_inactive_tasks()
                     if now >= self._next_topics_refresh:
                         self._refresh_topics()
                         self._next_topics_refresh = now + self.config.topics_poll_sec
@@ -512,6 +513,8 @@ class AutoRunManager:
                     self._terminate_task(task, reason="missing side (auto)")
                 continue
             self._handle_process_exit(task, rc)
+
+        self._purge_inactive_tasks()
 
     def _handle_process_exit(self, task: TopicTask, rc: int) -> None:
         task.process = None
@@ -777,15 +780,12 @@ class AutoRunManager:
             print("[RUN] 当前无运行中的话题")
             return
         running_tasks = self._ordered_running_tasks()
-        other_tasks = [
-            task for task in self.tasks.values() if task not in running_tasks
-        ]
+        if not running_tasks:
+            print("[RUN] 当前无运行中的话题")
+            return
 
         for idx, task in enumerate(running_tasks, 1):
             self._print_single_task(task, idx)
-
-        for task in sorted(other_tasks, key=lambda t: (t.start_time, t.topic_id)):
-            self._print_single_task(task)
 
     def _print_single_task(self, task: TopicTask, index: Optional[int] = None) -> None:
         hb = task.last_heartbeat
@@ -828,6 +828,7 @@ class AutoRunManager:
             except ValueError:
                 pass
         self._terminate_task(task, reason="stopped by user")
+        self._purge_inactive_tasks()
         print(f"[CHOICE] stop topic={topic_id}")
 
     def _resolve_topic_identifier(self, text: str) -> Optional[str]:
@@ -864,6 +865,27 @@ class AutoRunManager:
         if task.status not in {"error", "ended"}:
             task.status = "stopped"
         task.heartbeat(reason)
+
+    def _purge_inactive_tasks(self) -> None:
+        """移除已停止/结束且不再需要展示的任务。"""
+
+        removable: List[str] = []
+        for topic_id, task in list(self.tasks.items()):
+            if task.is_running():
+                continue
+            if task.status in {"stopped", "ended", "exited", "error"} or task.no_restart:
+                removable.append(topic_id)
+
+        if not removable:
+            return
+
+        for topic_id in removable:
+            self.tasks.pop(topic_id, None)
+            if topic_id in self.pending_topics:
+                try:
+                    self.pending_topics.remove(topic_id)
+                except ValueError:
+                    pass
 
     def _refresh_topics(self) -> None:
         try:
