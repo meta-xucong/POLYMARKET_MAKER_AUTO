@@ -501,6 +501,15 @@ class AutoRunManager:
                         f"[AUTO] topic={task.topic_id} 日志显示市场已结束，自动结束该话题。"
                     )
                     self._terminate_task(task, reason="market closed (auto)")
+                elif self._log_indicates_missing_side(task):
+                    task.status = "ended"
+                    task.no_restart = True
+                    task.end_reason = "missing side"
+                    task.heartbeat("missing side detected from log")
+                    print(
+                        f"[AUTO] topic={task.topic_id} 检测到无法确定下单方向，视为话题结束，释放执行名额。"
+                    )
+                    self._terminate_task(task, reason="missing side (auto)")
                 continue
             self._handle_process_exit(task, rc)
 
@@ -510,6 +519,13 @@ class AutoRunManager:
             task.status = "exited" if rc == 0 else "error"
         task.heartbeat(f"process finished rc={rc}")
         self._update_log_excerpt(task)
+
+        if self._log_indicates_missing_side(task):
+            task.no_restart = True
+            task.status = "ended"
+            task.end_reason = "missing side"
+            task.heartbeat("missing side detected from log on exit")
+            return
 
         if task.no_restart:
             return
@@ -554,6 +570,15 @@ class AutoRunManager:
             "[market] 达到市场截止时间",
             "[market] 收到市场关闭事件",
             "[exit] 最终状态",
+        )
+        return any(p.lower() in excerpt for p in patterns)
+
+    def _log_indicates_missing_side(self, task: TopicTask) -> bool:
+        excerpt = (task.log_excerpt or "").lower()
+        if not excerpt:
+            return False
+        patterns = (
+            "未提供下单方向 side，且未能从 preferred_side/highlight_sides 推断",
         )
         return any(p.lower() in excerpt for p in patterns)
 
