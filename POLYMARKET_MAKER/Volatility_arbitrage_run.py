@@ -2055,6 +2055,14 @@ def main(run_config: Optional[Dict[str, Any]] = None):
     stop_event = threading.Event()
     sell_only_event = threading.Event()
     market_closed_detected = False
+    ws_state_lock = threading.Lock()
+    ws_state: Dict[str, Any] = {
+        "last_event_ts": 0.0,
+        "last_state": "init",
+        "last_state_ts": time.time(),
+        "open": False,
+        "last_error": "",
+    }
 
     slug_for_refresh = ""
     if isinstance(market_meta, dict):
@@ -2248,6 +2256,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         else:
             return
         ts = _extract_ts(ev.get("timestamp") or ev.get("ts") or ev.get("time"))
+        with ws_state_lock:
+            ws_state["last_event_ts"] = time.time()
         for pc in pcs:
             if str(pc.get("asset_id")) != str(token_id):
                 continue
@@ -2292,13 +2302,39 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         return
                     time.sleep(1)
 
+    def _on_ws_state(state: str, info: Dict[str, Any]):
+        ts_now = time.time()
+        with ws_state_lock:
+            ws_state["last_state"] = state
+            ws_state["last_state_ts"] = ts_now
+            if state == "open":
+                ws_state["open"] = True
+                ws_state["last_error"] = ""
+            elif state == "error":
+                ws_state["last_error"] = str(info.get("error") or "")
+            elif state in {"closed", "silence"}:
+                ws_state["open"] = False
+
+        if state == "open":
+            print("[WS] 连接已建立，等待行情推送…")
+        elif state == "silence":
+            timeout = info.get("timeout")
+            print(f"[WS] 超过 {timeout}s 未收到消息，正在尝试重连…")
+        elif state == "error":
+            print(f"[WS] 连接异常：{info.get('error')}")
+        elif state == "closed":
+            status_code = info.get("status_code")
+            print(f"[WS] 连接关闭（code={status_code}），等待重连…")
+
     ws_thread = threading.Thread(
         target=ws_watch_by_ids,
         kwargs={
             "asset_ids": [token_id],
             "label": f"{title} ({side})",
             "on_event": _on_event,
+            "on_state": _on_ws_state,
             "verbose": False,
+            "stop_event": stop_event,
         },
         daemon=True,
     )
@@ -2309,7 +2345,25 @@ def main(run_config: Optional[Dict[str, Any]] = None):
     start_wait = time.time()
     while not latest.get(token_id) and not stop_event.is_set():
         if time.time() - start_wait > 5:
-            print("[WAIT] 尚未收到行情，继续等待…")
+            state_note = ""
+            with ws_state_lock:
+                last_state = ws_state.get("last_state")
+                last_state_ts = ws_state.get("last_state_ts", 0.0)
+                last_event_ts = ws_state.get("last_event_ts", 0.0)
+                last_error = ws_state.get("last_error")
+            now_ts = time.time()
+            state_age = now_ts - last_state_ts if last_state_ts else None
+            event_age = now_ts - last_event_ts if last_event_ts else None
+            if last_state:
+                parts = [f"ws={last_state}"]
+                if state_age is not None:
+                    parts.append(f"age={state_age:.0f}s")
+                if event_age is not None and event_age < 1e9 and last_event_ts > 0:
+                    parts.append(f"last_event={event_age:.0f}s")
+                if last_error:
+                    parts.append(f"err={last_error}")
+                state_note = " | " + " ".join(parts)
+            print(f"[WAIT] 尚未收到行情，继续等待…{state_note}")
             start_wait = time.time()
         time.sleep(0.2)
 
