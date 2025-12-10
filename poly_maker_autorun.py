@@ -688,8 +688,10 @@ class AutoRunManager:
             try:
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
+                    start_new_session=True,
                 )
                 log_file.close()
                 break
