@@ -1,0 +1,57 @@
+{
+  "timestamp": "2025-12-10T18:55:33Z",
+  "handled_topics_total": 4,
+  "handled_topics": [
+    "trump-approval-up-or-down-this-week-934",
+    "will-all-i-want-for-christmas-is-you-mariah-carey-be-the-1-song-on-spotify-this-week",
+    "will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week",
+    "will-trumps-approval-rating-be-between-41pt0-and-41pt4-on-december-12-2025"
+  ],
+  "pending_topics": [],
+  "tasks": {
+    "will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week": {
+      "status": "running",
+      "pid": 2165420,
+      "last_heartbeat": 1765392910.115907,
+      "notes": [
+        "started",
+        "stopped by user",
+        "process finished rc=-15",
+        "restart attempt 1/1 after rc=-15",
+        "started"
+      ],
+      "log_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/autorun_will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week.log",
+      "config_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/run_params_will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week.json"
+    },
+    "will-all-i-want-for-christmas-is-you-mariah-carey-be-the-1-song-on-spotify-this-week": {
+      "status": "running",
+      "pid": 2165220,
+      "last_heartbeat": 1765392910.1162407,
+      "notes": [
+        "started"
+      ],
+      "log_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/autorun_will-all-i-want-for-christmas-is-you-mariah-carey-be-the-1-song-on-spotify-this-week.log",
+      "config_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/run_params_will-all-i-want-for-christmas-is-you-mariah-carey-be-the-1-song-on-spotify-this-week.json"
+    },
+    "trump-approval-up-or-down-this-week-934": {
+      "status": "running",
+      "pid": 2165221,
+      "last_heartbeat": 1765392910.1163526,
+      "notes": [
+        "started"
+      ],
+      "log_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/autorun_trump-approval-up-or-down-this-week-934.log",
+      "config_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/run_params_trump-approval-up-or-down-this-week-934.json"
+    },
+    "will-trumps-approval-rating-be-between-41pt0-and-41pt4-on-december-12-2025": {
+      "status": "running",
+      "pid": 2165222,
+      "last_heartbeat": 1765392910.1164117,
+      "notes": [
+        "started"
+      ],
+      "log_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/autorun_will-trumps-approval-rating-be-between-41pt0-and-41pt4-on-december-12-2025.log",
+      "config_path": "/home/trader/polymarket_api/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/logs/run_params_will-trumps-approval-rating-be-between-41pt0-and-41pt4-on-december-12-2025.json"
+    }
+  }
+}

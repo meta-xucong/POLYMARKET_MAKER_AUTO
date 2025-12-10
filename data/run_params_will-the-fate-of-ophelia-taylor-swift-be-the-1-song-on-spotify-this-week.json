@@ -1,0 +1,41 @@
+{
+  "timezone": "America/New_York",
+  "disable_deadline_checks": false,
+  "deadline_policy": {
+    "override_choice": null,
+    "disable_deadline": false,
+    "timezone": "America/New_York",
+    "default_deadline": {
+      "time": "12:59",
+      "timezone": "America/New_York"
+    }
+  },
+  "order_size_is_target": true,
+  "sell_mode": "aggressive",
+  "drop_window_minutes": 60,
+  "drop_pct": 0.001,
+  "profit_pct": 0.005,
+  "enable_incremental_drop_pct": true,
+  "incremental_drop_pct_step": 0.0002,
+  "countdown": {
+    "minutes_before_end": 300,
+    "absolute_time": null,
+    "timezone": null
+  },
+  "min_edge": 0.02,
+  "max_position_per_market": 10.0,
+  "order_size": 10.0526,
+  "spread_target": 0.01,
+  "refresh_interval_seconds": 10,
+  "max_open_orders": 10,
+  "market_url": "https://polymarket.com/market/will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week",
+  "topic_id": "will-the-fate-of-ophelia-taylor-swift-be-the-1-song-on-spotify-this-week",
+  "topic_name": "Will The Fate of Ophelia - Taylor Swift be the #1 song on Spotify this week?",
+  "yes_token": "55279349122848040017817556069442296814047261688984945759272867975787022205399",
+  "no_token": "103381082174746715741081236545815455971299473101796363447356323248296848307526",
+  "end_time": "2025-12-12T00:00:00+00:00",
+  "side": "YES",
+  "highlight_sides": [
+    "YES"
+  ]
+}
