@@ -278,19 +278,55 @@ def _is_arch_legacy_nonclob(raw: Dict[str, Any], legacy_end_days: int) -> bool:
     return False
 
 def _extract_event_id(raw: Dict[str, Any]) -> Optional[str]:
-    for k in (
+    """尽可能宽松地提取事件标识，用于同事件只选一个市场的去重。
+
+    部分行情接口会将事件信息放在二级字段（如 event: {id/slug/...}），
+    或使用不同的命名风格。这里统一兜底解析，避免因为缺少 event_id
+    导致同一事件的多个市场同时通过筛选。
+    """
+
+    def _stringify(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        try:
+            s = str(v).strip()
+            return s or None
+        except Exception:
+            return None
+
+    # 直接暴露在顶层的 eventId/slug 等
+    direct_keys = (
         "eventId",
         "event_id",
         "eventID",
         "eventSlug",
         "event_slug",
-    ):
-        v = raw.get(k)
+        "eventTitle",
+        "event_title",
+        "eventName",
+        "event_name",
+    )
+    for k in direct_keys:
+        v = _stringify(raw.get(k))
         if v:
-            try:
-                return str(v)
-            except Exception:
-                pass
+            return v
+
+    nested = raw.get("event") or raw.get("eventInfo") or raw.get("event_info")
+    if isinstance(nested, dict):
+        for k in ("id", "eventId", "slug", "eventSlug", "title", "name"):
+            v = _stringify(nested.get(k))
+            if v:
+                return v
+    elif isinstance(nested, str):
+        v = _stringify(nested)
+        if v:
+            return v
+
+    # 部分接口直接在顶层放字符串事件名
+    v = _stringify(raw.get("event"))
+    if v:
+        return v
+
     return None
 
 def _parse_market(raw: Dict[str, Any]) -> MarketSnapshot:
