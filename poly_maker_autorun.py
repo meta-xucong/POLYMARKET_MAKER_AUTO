@@ -805,7 +805,7 @@ class AutoRunManager:
     def _ordered_running_tasks(self) -> List[TopicTask]:
         return sorted(
             [task for task in self.tasks.values() if task.is_running()],
-            key=lambda t: (task.start_time, task.topic_id),
+            key=lambda t: (t.start_time, t.topic_id),
         )
 
     def _stop_topic(self, topic_or_index: str) -> None:
