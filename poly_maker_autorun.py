@@ -776,20 +776,42 @@ class AutoRunManager:
         if not self.tasks:
             print("[RUN] 当前无运行中的话题")
             return
-        for topic_id, task in self.tasks.items():
-            hb = task.last_heartbeat
-            hb_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hb)) if hb else "-"
-            pid_text = str(task.process.pid) if task.process else "-"
-            log_name = task.log_path.name if task.log_path else "-"
-            log_hint = (task.log_excerpt.splitlines() or ["-"])[-1].strip()
-            print(
-                f"[RUN] topic={topic_id} status={task.status} "
-                f"start={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task.start_time))} "
-                f"pid={pid_text} hb={hb_text} notes={len(task.notes)} "
-                f"log={log_name} last_line={log_hint or '-'}"
-            )
+        running_tasks = self._ordered_running_tasks()
+        other_tasks = [
+            task for task in self.tasks.values() if task not in running_tasks
+        ]
 
-    def _stop_topic(self, topic_id: str) -> None:
+        for idx, task in enumerate(running_tasks, 1):
+            self._print_single_task(task, idx)
+
+        for task in sorted(other_tasks, key=lambda t: (t.start_time, t.topic_id)):
+            self._print_single_task(task)
+
+    def _print_single_task(self, task: TopicTask, index: Optional[int] = None) -> None:
+        hb = task.last_heartbeat
+        hb_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hb)) if hb else "-"
+        pid_text = str(task.process.pid) if task.process else "-"
+        log_name = task.log_path.name if task.log_path else "-"
+        log_hint = (task.log_excerpt.splitlines() or ["-"])[-1].strip()
+
+        prefix = f"[RUN {index}]" if index is not None else "[RUN]"
+        print(
+            f"{prefix} topic={task.topic_id} status={task.status} "
+            f"start={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task.start_time))} "
+            f"pid={pid_text} hb={hb_text} notes={len(task.notes)} "
+            f"log={log_name} last_line={log_hint or '-'}"
+        )
+
+    def _ordered_running_tasks(self) -> List[TopicTask]:
+        return sorted(
+            [task for task in self.tasks.values() if task.is_running()],
+            key=lambda t: (task.start_time, task.topic_id),
+        )
+
+    def _stop_topic(self, topic_or_index: str) -> None:
+        topic_id = self._resolve_topic_identifier(topic_or_index)
+        if not topic_id:
+            return
         task = self.tasks.get(topic_id)
         if not task:
             print(f"[WARN] topic {topic_id} 不在运行列表中")
@@ -807,6 +829,22 @@ class AutoRunManager:
                 pass
         self._terminate_task(task, reason="stopped by user")
         print(f"[CHOICE] stop topic={topic_id}")
+
+    def _resolve_topic_identifier(self, text: str) -> Optional[str]:
+        text = text.strip()
+        if not text:
+            print("[WARN] stop 命令缺少参数")
+            return None
+        if text.isdigit():
+            index = int(text)
+            running_tasks = self._ordered_running_tasks()
+            if 1 <= index <= len(running_tasks):
+                return running_tasks[index - 1].topic_id
+            print(
+                f"[WARN] 无效的序号 {index}，当前运行中的任务数为 {len(running_tasks)}"
+            )
+            return None
+        return text
 
     def _terminate_task(self, task: TopicTask, reason: str) -> None:
         proc = task.process
