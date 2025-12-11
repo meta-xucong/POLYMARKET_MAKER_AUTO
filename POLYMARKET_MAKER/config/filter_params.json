@@ -65,8 +65,8 @@
   ],
   "highlight": {
     "max_hours": 48,
-    "ask_min": 0.94,
-    "ask_max": 0.99,
+    "ask_min": 0.955,
+    "ask_max": 0.995,
     "min_total_volume": 10000,
     "max_ask_diff": 0.2
   }
