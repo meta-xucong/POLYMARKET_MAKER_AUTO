@@ -294,6 +294,42 @@ def _extract_event_id(raw: Dict[str, Any]) -> Optional[str]:
         except Exception:
             return None
 
+    def _from_list(obj: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(obj, list) and obj:
+            first = obj[0]
+            if isinstance(first, dict):
+                return first
+        return None
+
+    def _extract_from_mapping(mapping: Dict[str, Any]) -> Optional[str]:
+        for k in (
+            "id",
+            "eventId",
+            "slug",
+            "eventSlug",
+            "title",
+            "eventTitle",
+            "name",
+            "eventName",
+        ):
+            v = _stringify(mapping.get(k))
+            if v:
+                return v
+        return None
+
+    # Gamma /markets 会把事件信息放进 events/templates 列表里，优先从这里取
+    events_obj = _from_list(raw.get("events"))
+    if events_obj:
+        v = _extract_from_mapping(events_obj)
+        if v:
+            return v
+
+    templates_obj = _from_list(raw.get("templates"))
+    if templates_obj:
+        v = _extract_from_mapping(templates_obj)
+        if v:
+            return v
+
     # 直接暴露在顶层的 eventId/slug 等
     direct_keys = (
         "eventId",
