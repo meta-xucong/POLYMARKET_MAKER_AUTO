@@ -1,7 +1,7 @@
 {
   "scheduler": {
     "max_concurrent_jobs": 10,
-    "poll_interval_seconds": 2.0,
+    "poll_interval_seconds": 60.0,
     "task_timeout_seconds": 180
   },
   "paths": {
@@ -18,7 +18,7 @@
     "jitter_fraction": 0.2
   },
   "monitoring": {
-    "metrics_flush_interval_seconds": 15,
-    "healthcheck_interval_seconds": 30
+    "metrics_flush_interval_seconds": 60,
+    "healthcheck_interval_seconds": 120
   }
 }
