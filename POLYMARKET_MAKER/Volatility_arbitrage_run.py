@@ -2762,6 +2762,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 progress_probe_interval=60.0,
                 position_fetcher=_position_size_fetcher,
                 position_refresh_interval=30.0,
+                price_decimals=market_price_precision,
             )
         except Exception as exc:
             print(f"[ERR] {source} 卖出挂单异常：{exc}")

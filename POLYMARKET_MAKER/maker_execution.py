@@ -856,6 +856,7 @@ def maker_sell_follow_ask_with_floor_wait(
     position_fetcher: Optional[Callable[[], Optional[float]]] = None,
     position_refresh_interval: float = 30.0,
     ask_validation_interval: float = 60.0,
+    price_decimals: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Maintain a maker sell order while respecting a profit floor."""
 
@@ -871,6 +872,18 @@ def maker_sell_follow_ask_with_floor_wait(
             "remaining": 0.0,
             "orders": [],
         }
+
+    def _normalize_price_dp(val: Optional[int]) -> int:
+        try:
+            cand = int(val) if val is not None else None
+        except Exception:
+            return SELL_PRICE_DP
+        if cand is None or cand < 0:
+            return SELL_PRICE_DP
+        return min(cand, 6)
+
+    price_dp = _normalize_price_dp(price_decimals)
+    tick = _order_tick(price_dp)
 
     adapter = ClobPolymarketAPI(client)
     orders: List[Dict[str, Any]] = []
@@ -891,7 +904,6 @@ def maker_sell_follow_ask_with_floor_wait(
     active_price: Optional[float] = None
 
     final_status = "PENDING"
-    tick = _order_tick(SELL_PRICE_DP)
 
     waiting_for_floor = False
     aggressive_mode = str(sell_mode).lower() == "aggressive"
@@ -915,7 +927,7 @@ def maker_sell_follow_ask_with_floor_wait(
         aggressive_step = 0.01
     if aggressive_step <= 0:
         aggressive_mode = False
-    floor_float = float(floor_X)
+    floor_float = _round_up_to_dp(float(floor_X), price_dp)
 
     try:
         position_refresh_interval = float(position_refresh_interval)
@@ -1023,13 +1035,26 @@ def maker_sell_follow_ask_with_floor_wait(
             final_status = "FILLED_TRUNCATED" if filled_total > _MIN_FILL_EPS else "SKIPPED_TOO_SMALL"
             break
 
-        ask = _best_ask(client, token_id, best_ask_fn)
+        ask_info = _best_price_info(client, token_id, best_ask_fn, "ask")
+        ask = ask_info.price if ask_info is not None else None
+        if ask_info and ask_info.decimals is not None:
+            detected_dp = _normalize_price_dp(ask_info.decimals)
+            if detected_dp != price_dp:
+                price_dp = detected_dp
+                tick = _order_tick(price_dp)
+                floor_float = _round_up_to_dp(floor_float, price_dp)
         if ask_validation_interval and now >= max(next_ask_validation, 0.0):
             interval = max(ask_validation_interval, poll_sec, 1e-6)
             next_ask_validation = now + interval
             validated = _fetch_best_price(client, token_id, "ask")
             if validated is not None and validated.price > 0:
                 validated_price = float(validated.price)
+                if validated.decimals is not None:
+                    detected_dp = _normalize_price_dp(validated.decimals)
+                    if detected_dp != price_dp:
+                        price_dp = detected_dp
+                        tick = _order_tick(price_dp)
+                        floor_float = _round_up_to_dp(floor_float, price_dp)
                 tolerance = max(tick * 0.5, 1e-6)
                 if ask is None or abs(validated_price - ask) > tolerance:
                     prev = ask
@@ -1037,12 +1062,12 @@ def maker_sell_follow_ask_with_floor_wait(
                     direction = "下行" if prev is not None and validated_price < prev else "上行"
                     if prev is None:
                         print(
-                            f"[MAKER][SELL] 卖一校验覆盖：无本地价，采用最新卖一 {ask:.{SELL_PRICE_DP}f}"
+                            f"[MAKER][SELL] 卖一校验覆盖：无本地价，采用最新卖一 {ask:.{price_dp}f}"
                         )
                     else:
                         print(
                             "[MAKER][SELL] 卖一校验覆盖（" + direction + ") -> "
-                            f"old={prev:.{SELL_PRICE_DP}f} new={ask:.{SELL_PRICE_DP}f}"
+                            f"old={prev:.{price_dp}f} new={ask:.{price_dp}f}"
                         )
         if not aggressive_mode:
             if ask is None or ask <= 0:
@@ -1060,10 +1085,10 @@ def maker_sell_follow_ask_with_floor_wait(
                     next_price_override = None
                 sleep_fn(poll_sec)
                 continue
-            if ask < floor_X - 1e-12:
+            if ask < floor_float - 1e-12:
                 if not waiting_for_floor:
                     print(
-                        f"[MAKER][SELL] 卖一跌破地板，撤单等待 | ask={ask:.{SELL_PRICE_DP}f} floor={floor_X:.{SELL_PRICE_DP}f}"
+                        f"[MAKER][SELL] 卖一跌破地板，撤单等待 | ask={ask:.{price_dp}f} floor={floor_float:.{price_dp}f}"
                     )
                 waiting_for_floor = True
                 if active_order:
@@ -1079,7 +1104,7 @@ def maker_sell_follow_ask_with_floor_wait(
                     next_price_override = None
                 sleep_fn(poll_sec)
                 continue
-            if waiting_for_floor and ask >= floor_X:
+            if waiting_for_floor and ask >= floor_float:
                 waiting_for_floor = False
         else:
             if ask is None or ask <= 0:
@@ -1093,23 +1118,23 @@ def maker_sell_follow_ask_with_floor_wait(
                 aggressive_locked_price = None
 
         if active_order is None:
-            px_candidate = max(_round_down_to_dp(ask, SELL_PRICE_DP), floor_float)
+            px_candidate = max(_round_down_to_dp(ask, price_dp), floor_float)
             if next_price_override is not None:
                 px_candidate = max(
-                    _round_down_to_dp(next_price_override, SELL_PRICE_DP),
+                    _round_down_to_dp(next_price_override, price_dp),
                     floor_float,
                 )
                 next_price_override = None
             if aggressive_mode:
                 if aggressive_next_price_override is not None:
                     px_candidate = max(
-                        _round_down_to_dp(aggressive_next_price_override, SELL_PRICE_DP),
+                        _round_down_to_dp(aggressive_next_price_override, price_dp),
                         floor_float,
                     )
                     aggressive_next_price_override = None
                 elif aggressive_locked_price is not None:
                     px_candidate = max(
-                        _round_down_to_dp(aggressive_locked_price, SELL_PRICE_DP),
+                        _round_down_to_dp(aggressive_locked_price, price_dp),
                         floor_float,
                     )
                 if px_candidate <= floor_float + 1e-12:
@@ -1244,7 +1269,7 @@ def maker_sell_follow_ask_with_floor_wait(
                     aggressive_timer_start = time.time()
                     aggressive_timer_anchor_fill = 0.0
             print(
-                f"[MAKER][SELL] 挂单 -> price={px:.{SELL_PRICE_DP}f} qty={qty:.{SELL_SIZE_DP}f} remaining={remaining:.{SELL_SIZE_DP}f}"
+                f"[MAKER][SELL] 挂单 -> price={px:.{price_dp}f} qty={qty:.{SELL_SIZE_DP}f} remaining={remaining:.{SELL_SIZE_DP}f}"
             )
             if progress_probe:
                 interval = max(progress_probe_interval, poll_sec, 1e-6)
@@ -1286,7 +1311,7 @@ def maker_sell_follow_ask_with_floor_wait(
         if last_price_hint is None:
             last_price_hint = _coerce_float(status_payload.get("avgPrice"))
         if last_price_hint is None:
-            last_price_hint = floor_X
+            last_price_hint = floor_float
         filled_amount, avg_price, notional_sum = _update_fill_totals(
             active_order,
             status_payload,
@@ -1309,7 +1334,7 @@ def maker_sell_follow_ask_with_floor_wait(
             remaining_slice = max(total_size - filled_amount, 0.0)
             if price_display is not None:
                 print(
-                    f"[MAKER][SELL] 挂单状态 -> price={float(price_display):.{SELL_PRICE_DP}f} "
+                    f"[MAKER][SELL] 挂单状态 -> price={float(price_display):.{price_dp}f} "
                     f"sold={filled_amount:.{SELL_SIZE_DP}f} remaining={remaining_slice:.{SELL_SIZE_DP}f} "
                     f"status={status_text_upper}"
                 )
@@ -1343,13 +1368,20 @@ def maker_sell_follow_ask_with_floor_wait(
             final_status = "FILLED"
             break
 
-        ask = _best_ask(client, token_id, best_ask_fn)
+        ask_info = _best_price_info(client, token_id, best_ask_fn, "ask")
+        ask = ask_info.price if ask_info is not None else None
+        if ask_info and ask_info.decimals is not None:
+            detected_dp = _normalize_price_dp(ask_info.decimals)
+            if detected_dp != price_dp:
+                price_dp = detected_dp
+                tick = _order_tick(price_dp)
+                floor_float = _round_up_to_dp(floor_float, price_dp)
         if not aggressive_mode:
             if ask is None:
                 continue
-            if ask < floor_X - 1e-12:
+            if ask < floor_float - 1e-12:
                 print(
-                    f"[MAKER][SELL] 卖一再次跌破地板，撤单等待 | ask={ask:.{SELL_PRICE_DP}f} floor={floor_X:.{SELL_PRICE_DP}f}"
+                    f"[MAKER][SELL] 卖一再次跌破地板，撤单等待 | ask={ask:.{price_dp}f} floor={floor_float:.{price_dp}f}"
                 )
                 _cancel_order(client, active_order)
                 rec = records.get(active_order)
@@ -1406,13 +1438,13 @@ def maker_sell_follow_ask_with_floor_wait(
                             next_price_override = floor_float
                         continue
                     next_px = max(
-                        _round_down_to_dp(target_price, SELL_PRICE_DP),
+                        _round_down_to_dp(target_price, price_dp),
                         floor_float,
                     )
                     if next_px < active_price - 1e-12:
                         print(
                             "[MAKER][SELL][激进] 挂单超时未成交，下调挂价 -> "
-                            f"old={active_price:.{SELL_PRICE_DP}f} new={next_px:.{SELL_PRICE_DP}f}"
+                            f"old={active_price:.{price_dp}f} new={next_px:.{price_dp}f}"
                         )
                         _cancel_order(client, active_order)
                         rec = records.get(active_order)
@@ -1426,7 +1458,7 @@ def maker_sell_follow_ask_with_floor_wait(
                         continue
 
         if active_price is not None and ask <= active_price - tick - 1e-12:
-            new_px = max(_round_down_to_dp(ask, SELL_PRICE_DP), float(floor_X))
+            new_px = max(_round_down_to_dp(ask, price_dp), floor_float)
             if aggressive_mode:
                 if active_price <= floor_float + 1e-12:
                     continue
@@ -1450,7 +1482,7 @@ def maker_sell_follow_ask_with_floor_wait(
                     next_price_override = floor_float
                     continue
             print(
-                f"[MAKER][SELL] 卖一下行 -> 撤单重挂 | old={active_price:.{SELL_PRICE_DP}f} new={new_px:.{SELL_PRICE_DP}f}"
+                f"[MAKER][SELL] 卖一下行 -> 撤单重挂 | old={active_price:.{price_dp}f} new={new_px:.{price_dp}f}"
             )
             if aggressive_mode and new_px > floor_float + 1e-12:
                 aggressive_floor_locked = False
