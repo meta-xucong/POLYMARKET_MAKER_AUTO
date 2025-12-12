@@ -172,6 +172,8 @@ class FilterResult:
     chosen: List[MarketSnapshot]
     rejected: List[Tuple[MarketSnapshot, str]]
     highlights: List[HighlightedOutcome]
+    merged_event_count: int = 0
+    missing_event_id_count: int = 0
 
 # -------------------------------
 # Gamma 抓取（时间切片 · 突破500）
@@ -706,8 +708,8 @@ def _highlight_label() -> str:
             f"& 总交易量≥{int(HIGHLIGHT_MIN_TOTAL_VOLUME)}USDC & 单边点差≤{HIGHLIGHT_MAX_ASK_DIFF:.2f} & 非黑名单")
 
 
-def _event_key(ms: MarketSnapshot) -> str:
-    return ms.event_id or ms.slug
+def _event_key(ms: MarketSnapshot) -> Optional[str]:
+    return ms.event_id
 
 
 def _outcome_price(snap: OutcomeSnapshot) -> float:
@@ -809,6 +811,7 @@ def collect_filter_results(
 
     event_candidates: Dict[str, List[Tuple[MarketSnapshot, OutcomeSnapshot, float, float]]] = {}
     event_reject_slugs: set[str] = set()
+    missing_event_id_count = 0
     highlights: List[HighlightedOutcome] = []
 
     for ms in chosen:
@@ -817,6 +820,14 @@ def collect_filter_results(
             continue
         snap, hours = _best_outcome(hits)
         ek = _event_key(ms)
+        if ek is None:
+            missing_event_id_count += 1
+            highlights.append(
+                HighlightedOutcome(
+                    market=ms, outcome=snap, hours_to_end=hours
+                )
+            )
+            continue
         event_candidates.setdefault(ek, []).append(
             (ms, snap, hours, _outcome_price(snap))
         )
@@ -849,6 +860,8 @@ def collect_filter_results(
         chosen=chosen,
         rejected=rejects,
         highlights=highlights,
+        merged_event_count=len(event_reject_slugs),
+        missing_event_id_count=missing_event_id_count,
     )
 
 
@@ -1037,6 +1050,8 @@ def main():
 
     print("")
     print(f"[INFO] 通过筛选的市场数量：{len(result.chosen)} / {result.total_markets}")
+    print(f"[INFO] 合并同类项数量：{result.merged_event_count}")
+    print(f"[INFO] 未获取到事件ID的数量：{result.missing_event_id_count}")
 
 if __name__ == "__main__":
     main()
