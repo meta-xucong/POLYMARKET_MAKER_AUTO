@@ -860,6 +860,7 @@ def maker_sell_follow_ask_with_floor_wait(
 ) -> Dict[str, Any]:
     """Maintain a maker sell order while respecting a profit floor."""
 
+    price_cap = 0.999
     goal_size = max(_floor_to_dp(float(position_size), SELL_SIZE_DP), 0.0)
     api_min_qty = 0.0
     if min_order_size and min_order_size > 0:
@@ -1145,7 +1146,16 @@ def maker_sell_follow_ask_with_floor_wait(
                     aggressive_floor_locked = False
             else:
                 aggressive_next_price_override = None
-            px = px_candidate
+            if px_candidate > price_cap + 1e-12:
+                capped_px = _round_down_to_dp(price_cap, price_dp)
+                if capped_px < price_cap - 1e-12:
+                    capped_px = price_cap
+                print(
+                    f"[MAKER][SELL] 价格超过上限，按 {capped_px:.{price_dp}f} 挂单 (原始 {px_candidate:.{price_dp}f})"
+                )
+                px = capped_px
+            else:
+                px = px_candidate
             qty = _floor_to_dp(remaining, SELL_SIZE_DP)
             if qty < 0.01:
                 final_status = "FILLED"
