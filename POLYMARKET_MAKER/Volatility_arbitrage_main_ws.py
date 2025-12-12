@@ -71,7 +71,7 @@ def ws_watch_by_ids(
 
     reconnect_delay = 1
     max_reconnect_delay = 60
-    silence_timeout = 60  # 秒，超过则主动重连以避免卡死
+    silence_timeout = 600  # 秒，超过则主动重连以避免卡死
 
     headers = [
         "Origin: https://polymarket.com",
