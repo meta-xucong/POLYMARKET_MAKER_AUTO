@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
@@ -41,6 +43,8 @@ HIGHLIGHT_ASK_MIN: float     = 0.96
 HIGHLIGHT_ASK_MAX: float     = 0.995
 HIGHLIGHT_MIN_TOTAL_VOLUME: float = 10000.0  # 总交易量≥此值（USDC）
 HIGHLIGHT_MAX_ASK_DIFF: float = 0.10         # 同一 token 点差 |ask - bid| ≤ 此阈值（YES 或 NO 任一侧满足即可）
+
+DEFAULT_FILTER_CONFIG_PATH = Path("POLYMARKET_MAKER/config/filter_params.json")
 
 
 # -------------------------------
@@ -103,6 +107,66 @@ def _hours_until(t: Optional[dt.datetime]) -> Optional[float]:
         return None
     delta = (t - _now_utc()).total_seconds() / 3600.0
     return round(delta, 1)
+
+
+def _load_filter_config(path: Path) -> Dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        print(f"[WARN] 未找到筛选配置文件：{path}，将回退到脚本内默认值。")
+    except Exception as exc:
+        print(f"[WARN] 读取筛选配置失败：{exc}，将回退到脚本内默认值。")
+    return {}
+
+
+def _apply_highlight_config(conf: Dict[str, Any]) -> None:
+    global HIGHLIGHT_MAX_HOURS, HIGHLIGHT_ASK_MIN, HIGHLIGHT_ASK_MAX
+    global HIGHLIGHT_MIN_TOTAL_VOLUME, HIGHLIGHT_MAX_ASK_DIFF
+
+    if conf is None:
+        return
+
+    try:
+        if "max_hours" in conf:
+            HIGHLIGHT_MAX_HOURS = float(conf.get("max_hours", HIGHLIGHT_MAX_HOURS))
+        if "ask_min" in conf:
+            HIGHLIGHT_ASK_MIN = float(conf.get("ask_min", HIGHLIGHT_ASK_MIN))
+        if "ask_max" in conf:
+            HIGHLIGHT_ASK_MAX = float(conf.get("ask_max", HIGHLIGHT_ASK_MAX))
+        if "min_total_volume" in conf:
+            HIGHLIGHT_MIN_TOTAL_VOLUME = float(conf.get("min_total_volume", HIGHLIGHT_MIN_TOTAL_VOLUME))
+        if "max_ask_diff" in conf:
+            HIGHLIGHT_MAX_ASK_DIFF = float(conf.get("max_ask_diff", HIGHLIGHT_MAX_ASK_DIFF))
+    except Exception:
+        # 保底：若配置值无法解析，维持原有默认值
+        pass
+
+
+def _config_defaults(conf: Dict[str, Any]) -> Dict[str, Any]:
+    defaults: Dict[str, Any] = {
+        "min_end_hours": conf.get("min_end_hours", DEFAULT_MIN_END_HOURS),
+        "max_end_days": conf.get("max_end_days", DEFAULT_MAX_END_DAYS),
+        "gamma_window_days": conf.get("gamma_window_days", DEFAULT_GAMMA_WINDOW_DAYS),
+        "gamma_min_window_hours": conf.get("gamma_min_window_hours", DEFAULT_GAMMA_MIN_WINDOW_HOURS),
+        "legacy_end_days": conf.get("legacy_end_days", DEFAULT_LEGACY_END_DAYS),
+        "allow_illiquid": conf.get("allow_illiquid", False),
+        "skip_orderbook": conf.get("skip_orderbook", False),
+        "no_rest_backfill": conf.get("no_rest_backfill", False),
+        "books_batch_size": conf.get("books_batch_size", 200),
+        "books_timeout_sec": conf.get("books_timeout_sec", 10.0),
+        "only": conf.get("only", ""),
+    }
+
+    defaults["blacklist_terms"] = [
+        str(t).strip() for t in conf.get("blacklist_terms", []) if str(t).strip()
+    ]
+
+    _apply_highlight_config(conf.get("highlight") or {})
+    set_blacklist_terms(defaults["blacklist_terms"])
+    return defaults
 
 def _infer_binary_from_raw(raw: Dict[str, Any]) -> bool:
     if not isinstance(raw, dict):
@@ -412,7 +476,12 @@ def _parse_market(raw: Dict[str, Any]) -> MarketSnapshot:
 def _is_binary(ms: MarketSnapshot) -> bool:
     return bool(ms.yes.token_id and ms.no.token_id)
 
-def _early_filter_reason(ms: MarketSnapshot, min_end_hours: float, legacy_end_days: int) -> Tuple[bool, str]:
+def _early_filter_reason(
+    ms: MarketSnapshot,
+    min_end_hours: float,
+    legacy_end_days: int,
+    max_end_hours: Optional[float] = None,
+) -> Tuple[bool, str]:
     if _is_arch_legacy_nonclob(ms.raw, legacy_end_days):
         if not _is_binary(ms) and _infer_binary_from_raw(ms.raw):
             return False, "二元（旧格式；缺 clobTokenIds）"
@@ -421,10 +490,15 @@ def _early_filter_reason(ms: MarketSnapshot, min_end_hours: float, legacy_end_da
         if _infer_binary_from_raw(ms.raw):
             return False, "二元（旧格式；缺 clobTokenIds）"
         return False, "非二元市场"
+    h = _hours_until(ms.end_time)
     if min_end_hours is not None and min_end_hours > 0:
-        h = _hours_until(ms.end_time)
         if h is None or h < min_end_hours:
             return False, f"剩余时间不足（{h}h）"
+    if max_end_hours is not None and max_end_hours > 0:
+        if h is None:
+            return False, "缺少截止时间"
+        if h > max_end_hours:
+            return False, f"剩余时间超出上限（{h}h）"
     return True, "候选（待回补报价）"
 
 # -------------------------------
@@ -522,57 +596,7 @@ def _final_pass_reason(ms: MarketSnapshot, require_quotes: bool) -> Tuple[bool, 
 # 打印
 # -------------------------------
 
-DEFAULT_BLACKLIST_TERMS = [
-    "Bitcoin",
-    "BTC",
-    "ETH",
-    "Ethereum",
-    "Sol",
-    "Solana",
-    "Doge",
-    "Dogecoin",
-    "BNB",
-    "Binance",
-    "Cardano",
-    "ADA",
-    "XRP",
-    "Ripple",
-    "Matic",
-    "Polygon",
-    "Crypto",
-    "Cryptocurrency",
-    "Blockchain",
-    "Token",
-    "NFT",
-    "DeFi",
-    "vs",
-    "odds",
-    "score",
-    "spread",
-    "moneyline",
-    "win",
-    "Esports",
-    "CS2",
-    "Cup",
-    "Arsenal",
-    "Liverpool",
-    "Chelsea",
-    "EPL",
-    "PGA",
-    "Tour Championship",
-    "Scottie Scheffler",
-    "Vitality",
-    "MOUZ",
-    "Falcons",
-    "The MongolZ",
-    "AL",
-    "Houston",
-    "Chicago",
-    "New York",
-    "Will Elon Musk post",
-    "dota2",
-    "a dozen eggs",
-]
+DEFAULT_BLACKLIST_TERMS: List[str] = []
 
 def _build_blacklist_patterns(terms: Iterable[str]) -> List[Tuple[str, re.Pattern[str]]]:
     patterns: List[Tuple[str, re.Pattern[str]]] = []
@@ -747,6 +771,7 @@ def _best_outcome(hits: List[Tuple[OutcomeSnapshot, float]]) -> Tuple[OutcomeSna
 def collect_filter_results(
     *,
     min_end_hours: float = DEFAULT_MIN_END_HOURS,
+    max_end_hours: Optional[float] = None,
     max_end_days: int = DEFAULT_MAX_END_DAYS,
     gamma_window_days: int = DEFAULT_GAMMA_WINDOW_DAYS,
     gamma_min_window_hours: int = DEFAULT_GAMMA_MIN_WINDOW_HOURS,
@@ -764,6 +789,13 @@ def collect_filter_results(
 
     if blacklist_terms is not None:
         set_blacklist_terms(blacklist_terms)
+
+    effective_max_hours = max_end_hours
+    if effective_max_hours is None and max_end_days is not None:
+        try:
+            effective_max_hours = float(max_end_days) * 24.0
+        except Exception:
+            effective_max_hours = None
 
     if prefetched_markets is None:
         now = _now_utc()
@@ -789,7 +821,12 @@ def collect_filter_results(
         if only_pat and (only_pat not in title.lower() and only_pat not in slug.lower()):
             continue
         ms = _parse_market(raw)
-        ok, reason = _early_filter_reason(ms, min_end_hours, legacy_end_days)
+        ok, reason = _early_filter_reason(
+            ms,
+            min_end_hours,
+            legacy_end_days,
+            effective_max_hours,
+        )
         if ok:
             market_list.append(ms)
         else:
@@ -887,35 +924,127 @@ def _print_highlighted(highlights: List[Tuple[MarketSnapshot, OutcomeSnapshot, f
 # -------------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Polymarket 市场筛选（REST-only：/books 批量回补买一/卖一）")
-    ap.add_argument("--books-batch-size", type=int, default=200, help="REST /books 批量回补的 token_id 数量上限（非流式模式）")
-    ap.add_argument("--books-timeout", type=float, default=10.0, help="REST /books 回补单次请求超时时间（秒，非流式模式）")
-    ap.add_argument("--no_rest_backfill", dest="no_rest_backfill", action="store_true", help="关闭 REST 回补（诊断用，默认开启）")
-    ap.add_argument("--skip-orderbook", action="store_true", help="跳过任何订单簿/价格回补（仅诊断）")
-    ap.add_argument("--allow-illiquid", action="store_true", help="允许无报价市场通过（仅诊断）")
+    global HIGHLIGHT_MAX_HOURS, HIGHLIGHT_ASK_MIN, HIGHLIGHT_ASK_MAX, HIGHLIGHT_MIN_TOTAL_VOLUME, HIGHLIGHT_MAX_ASK_DIFF
+    pre_ap = argparse.ArgumentParser(add_help=False)
+    pre_ap.add_argument(
+        "--filter-config",
+        type=Path,
+        default=DEFAULT_FILTER_CONFIG_PATH,
+        help="筛选参数配置 JSON 路径",
+    )
+    pre_args, remaining = pre_ap.parse_known_args()
 
-    ap.add_argument("--min-end-hours", type=float, default=DEFAULT_MIN_END_HOURS, help="仅抓取结束时间晚于该阈值（小时）的市场")
-    ap.add_argument("--max-end-days", type=int, default=DEFAULT_MAX_END_DAYS, help="仅抓取结束时间在未来 N 天内的市场")
-    ap.add_argument("--gamma-window-days", type=int, default=DEFAULT_GAMMA_WINDOW_DAYS, help="Gamma 时间切片的窗口大小（天），命中 500 会自动递归切分")
-    ap.add_argument("--gamma-min-window-hours", type=int, default=DEFAULT_GAMMA_MIN_WINDOW_HOURS, help="Gamma 时间切片命中 500 时递归拆分的最小窗口（小时）；窗口缩到该级别仍满额会按 endDate 继续分页")
+    conf_raw = _load_filter_config(pre_args.filter_config)
+    defaults = _config_defaults(conf_raw)
 
-    ap.add_argument("--legacy-end-days", type=int, default=DEFAULT_LEGACY_END_DAYS, help="结束早于 N 天视为旧格式/归档（默认 730 天）")
+    ap = argparse.ArgumentParser(
+        description="Polymarket 市场筛选（REST-only：/books 批量回补买一/卖一）",
+        parents=[pre_ap],
+    )
+    ap.add_argument(
+        "--books-batch-size",
+        type=int,
+        default=int(defaults["books_batch_size"]),
+        help="REST /books 批量回补的 token_id 数量上限（非流式模式）",
+    )
+    ap.add_argument(
+        "--books-timeout",
+        type=float,
+        default=float(defaults.get("books_timeout_sec", 10.0)),
+        help="REST /books 回补单次请求超时时间（秒，非流式模式）",
+    )
+    ap.add_argument(
+        "--no_rest_backfill",
+        dest="no_rest_backfill",
+        action="store_true",
+        default=bool(defaults.get("no_rest_backfill", False)),
+        help="关闭 REST 回补（诊断用，默认开启）",
+    )
+    ap.add_argument(
+        "--skip-orderbook",
+        action="store_true",
+        default=bool(defaults.get("skip_orderbook", False)),
+        help="跳过任何订单簿/价格回补（仅诊断）",
+    )
+    ap.add_argument(
+        "--allow-illiquid",
+        action="store_true",
+        default=bool(defaults.get("allow_illiquid", False)),
+        help="允许无报价市场通过（仅诊断）",
+    )
 
-    # 高亮（严格口径）参数：不指定时使用脚本顶部的 HIGHLIGHT_* 默认值
-    ap.add_argument("--hl-max-hours", type=float, default=None,
-                    help="高亮条件：剩余时间 ≤ 该阈值（小时），例如 48 表示 48 小时内")
-    ap.add_argument("--hl-ask-min", type=float, default=None,
-                    help="高亮条件：卖一价下限，例如 0.96 表示 96% 起")
-    ap.add_argument("--hl-ask-max", type=float, default=None,
-                    help="高亮条件：卖一价上限，例如 0.995 表示 99.5% 封顶")
-    ap.add_argument("--hl-min-total-volume", type=float, default=None,
-                    help="高亮条件：总成交量下限（USDC），例如 10000 表示 ≥1 万 USDC")
-    ap.add_argument("--hl-max-ask-diff", type=float, default=None,
-                    help="高亮条件：单边点差 |ask-bid| 上限，例如 0.10 表示 ≤10 个点")
+    ap.add_argument(
+        "--min-end-hours",
+        type=float,
+        default=float(defaults.get("min_end_hours", DEFAULT_MIN_END_HOURS)),
+        help="仅抓取结束时间晚于该阈值（小时）的市场",
+    )
+    ap.add_argument(
+        "--max-end-days",
+        type=int,
+        default=int(defaults.get("max_end_days", DEFAULT_MAX_END_DAYS)),
+        help="仅抓取结束时间在未来 N 天内的市场",
+    )
+    ap.add_argument(
+        "--gamma-window-days",
+        type=int,
+        default=int(defaults.get("gamma_window_days", DEFAULT_GAMMA_WINDOW_DAYS)),
+        help="Gamma 时间切片的窗口大小（天），命中 500 会自动递归切分",
+    )
+    ap.add_argument(
+        "--gamma-min-window-hours",
+        type=int,
+        default=int(defaults.get("gamma_min_window_hours", DEFAULT_GAMMA_MIN_WINDOW_HOURS)),
+        help="Gamma 时间切片命中 500 时递归拆分的最小窗口（小时）；窗口缩到该级别仍满额会按 endDate 继续分页",
+    )
+
+    ap.add_argument(
+        "--legacy-end-days",
+        type=int,
+        default=int(defaults.get("legacy_end_days", DEFAULT_LEGACY_END_DAYS)),
+        help="结束早于 N 天视为旧格式/归档（默认 730 天）",
+    )
+
+    # 高亮（严格口径）参数：不指定时使用配置文件/脚本顶部的 HIGHLIGHT_* 默认值
+    ap.add_argument(
+        "--hl-max-hours",
+        type=float,
+        default=HIGHLIGHT_MAX_HOURS,
+        help="高亮条件：剩余时间 ≤ 该阈值（小时），例如 48 表示 48 小时内",
+    )
+    ap.add_argument(
+        "--hl-ask-min",
+        type=float,
+        default=HIGHLIGHT_ASK_MIN,
+        help="高亮条件：卖一价下限，例如 0.96 表示 96% 起",
+    )
+    ap.add_argument(
+        "--hl-ask-max",
+        type=float,
+        default=HIGHLIGHT_ASK_MAX,
+        help="高亮条件：卖一价上限，例如 0.995 表示 99.5% 封顶",
+    )
+    ap.add_argument(
+        "--hl-min-total-volume",
+        type=float,
+        default=HIGHLIGHT_MIN_TOTAL_VOLUME,
+        help="高亮条件：总成交量下限（USDC），例如 10000 表示 ≥1 万 USDC",
+    )
+    ap.add_argument(
+        "--hl-max-ask-diff",
+        type=float,
+        default=HIGHLIGHT_MAX_ASK_DIFF,
+        help="高亮条件：单边点差 |ask-bid| 上限，例如 0.10 表示 ≤10 个点",
+    )
 
     ap.add_argument("--diagnose", action="store_true", help="打印诊断信息（非流式模式下打印样本）")
     ap.add_argument("--diagnose-samples", type=int, default=30, help="诊断打印的样本数上限（非流式模式）")
-    ap.add_argument("--only", type=str, default="", help="仅处理包含该子串的 slug/title（大小写不敏感）")
+    ap.add_argument(
+        "--only",
+        type=str,
+        default=str(defaults.get("only", "")),
+        help="仅处理包含该子串的 slug/title（大小写不敏感）",
+    )
 
     # 流式输出选项
     ap.add_argument("--stream", action="store_true", help="启用流式逐个输出（按分片处理）")
@@ -923,10 +1052,9 @@ def main():
     ap.add_argument("--stream-books-batch-size", type=int, default=200, help="流式：每个分片内 REST /books 批量回补的 token_id 数量上限")
     ap.add_argument("--stream-books-timeout", type=float, default=10.0, help="流式：REST /books 回补单次请求超时时间（秒）")
     ap.add_argument("--stream-verbose", action="store_true", help="流式：逐个输出详细块（默认仅单行）")
-    args = ap.parse_args()
+    args = ap.parse_args(remaining)
 
     # 若指定了高亮参数，则覆盖全局 HIGHLIGHT_*，以便后续筛选与标签展示使用
-    global HIGHLIGHT_MAX_HOURS, HIGHLIGHT_ASK_MIN, HIGHLIGHT_ASK_MAX, HIGHLIGHT_MIN_TOTAL_VOLUME, HIGHLIGHT_MAX_ASK_DIFF
     if args.hl_max_hours is not None:
         HIGHLIGHT_MAX_HOURS = args.hl_max_hours
     if args.hl_ask_min is not None:
@@ -937,6 +1065,13 @@ def main():
         HIGHLIGHT_MIN_TOTAL_VOLUME = args.hl_min_total_volume
     if args.hl_max_ask_diff is not None:
         HIGHLIGHT_MAX_ASK_DIFF = args.hl_max_ask_diff
+
+    max_end_hours_limit: Optional[float] = None
+    try:
+        if args.max_end_days is not None:
+            max_end_hours_limit = float(args.max_end_days) * 24.0
+    except Exception:
+        max_end_hours_limit = None
 
     # 仅抓未来盘：时间窗口 = [now + min_end_hours, now + max_end_days]
     now = _now_utc()
@@ -969,7 +1104,9 @@ def main():
                 if only_pat and (only_pat not in title.lower() and only_pat not in slug.lower()):
                     continue
                 ms = _parse_market(raw)
-                ok, reason = _early_filter_reason(ms, args.min_end_hours, args.legacy_end_days)
+                ok, reason = _early_filter_reason(
+                    ms, args.min_end_hours, args.legacy_end_days, max_end_hours_limit
+                )
                 if ok:
                     candidates.append(ms)
                 else:
@@ -1012,6 +1149,7 @@ def main():
     # ---------- 非流式模式（批量） ----------
     result = collect_filter_results(
         min_end_hours=args.min_end_hours,
+        max_end_hours=max_end_hours_limit,
         max_end_days=args.max_end_days,
         gamma_window_days=args.gamma_window_days,
         gamma_min_window_hours=args.gamma_min_window_hours,
@@ -1022,6 +1160,7 @@ def main():
         books_batch_size=args.books_batch_size,
         books_timeout=args.books_timeout,
         only=args.only,
+        blacklist_terms=defaults.get("blacklist_terms", []),
         prefetched_markets=mkts_raw,
     )
 
