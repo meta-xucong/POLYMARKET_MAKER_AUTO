@@ -1244,7 +1244,25 @@ def maker_sell_follow_ask_with_floor_wait(
                         break
 
                     consecutive_insufficient_with_position += 1
-                    if consecutive_insufficient_with_position > 10:
+                    if consecutive_insufficient_with_position >= 5:
+                        shrink_step = 0.01
+                        shrink_cutoff = max(api_min_qty or 0.0, dust_cutoff)
+                        shrink_candidate = _floor_to_dp(
+                            max(remaining - shrink_step, 0.0), SELL_SIZE_DP
+                        )
+                        if shrink_candidate + _MIN_FILL_EPS >= shrink_cutoff:
+                            goal_size = filled_total + shrink_candidate
+                            remaining = max(goal_size - filled_total, 0.0)
+                            consecutive_insufficient_with_position = 5
+                            print(
+                                "[MAKER][SELL] 连续仓位不足，缩减卖出目标后重试 -> "
+                                f"old={refreshed_remaining:.{SELL_SIZE_DP}f} new={remaining:.{SELL_SIZE_DP}f}"
+                            )
+                        elif consecutive_insufficient_with_position > 10:
+                            final_status = "FAILED"
+                            print("[MAKER][SELL] 仓位数据接口返回数据错误，退出卖出流程。")
+                            break
+                    elif consecutive_insufficient_with_position > 10:
                         final_status = "FAILED"
                         print("[MAKER][SELL] 仓位数据接口返回数据错误，退出卖出流程。")
                         break
