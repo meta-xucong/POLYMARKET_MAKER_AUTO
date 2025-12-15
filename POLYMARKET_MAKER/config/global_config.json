@@ -1,6 +1,6 @@
 {
   "scheduler": {
-    "max_concurrent_jobs": 10,
+    "max_concurrent_jobs": 1,
     "poll_interval_seconds": 300.0,
     "task_timeout_seconds": 240
   },
