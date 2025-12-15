@@ -5,7 +5,7 @@
     "order_size": 10.0,
     "spread_target": 0.01,
     "refresh_interval_seconds": 30,
-    "max_open_orders": 4
+    "max_open_orders": 20
   },
   "topics": {
     "election_2024": {
