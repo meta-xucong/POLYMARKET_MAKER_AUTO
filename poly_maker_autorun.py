@@ -33,9 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MAKER_ROOT = PROJECT_ROOT / "POLYMARKET_MAKER"
 
 DEFAULT_GLOBAL_CONFIG = {
-    "topics_poll_sec": 10.0,
-    "command_poll_sec": 1.0,
-    "max_concurrent_tasks": 2,
+    "topics_poll_sec": 300.0,
+    "command_poll_sec": 5.0,
+    "max_concurrent_tasks": 10,
     "log_dir": str(MAKER_ROOT / "logs" / "autorun"),
     "data_dir": str(MAKER_ROOT / "data"),
     "handled_topics_path": str(MAKER_ROOT / "data" / "handled_topics.json"),
@@ -47,7 +47,9 @@ DEFAULT_GLOBAL_CONFIG = {
     "process_start_retries": 1,
     "process_retry_delay_sec": 2.0,
     "process_graceful_timeout_sec": 5.0,
-    "process_stagger_max_sec": 0.5,
+    "process_stagger_max_sec": 3.0,
+    "topic_start_cooldown_sec": 5.0,
+    "log_excerpt_interval_sec": 15.0,
     "runtime_status_path": str(MAKER_ROOT / "data" / "autorun_status.json"),
 }
 
@@ -194,6 +196,8 @@ class GlobalConfig:
         "process_graceful_timeout_sec"
     ]
     process_stagger_max_sec: float = DEFAULT_GLOBAL_CONFIG["process_stagger_max_sec"]
+    topic_start_cooldown_sec: float = DEFAULT_GLOBAL_CONFIG["topic_start_cooldown_sec"]
+    log_excerpt_interval_sec: float = DEFAULT_GLOBAL_CONFIG["log_excerpt_interval_sec"]
     runtime_status_path: Path = field(
         default_factory=lambda: Path(DEFAULT_GLOBAL_CONFIG["runtime_status_path"])
     )
@@ -275,6 +279,12 @@ class GlobalConfig:
             ),
             process_stagger_max_sec=float(
                 merged.get("process_stagger_max_sec", cls.process_stagger_max_sec)
+            ),
+            topic_start_cooldown_sec=float(
+                merged.get("topic_start_cooldown_sec", cls.topic_start_cooldown_sec)
+            ),
+            log_excerpt_interval_sec=float(
+                merged.get("log_excerpt_interval_sec", cls.log_excerpt_interval_sec)
             ),
             runtime_status_path=runtime_status_path,
         )
@@ -421,6 +431,7 @@ class TopicTask:
     restart_attempts: int = 0
     no_restart: bool = False
     end_reason: Optional[str] = None
+    last_log_excerpt_ts: float = 0.0
 
     def heartbeat(self, message: str) -> None:
         self.last_heartbeat = time.time()
@@ -453,6 +464,7 @@ class AutoRunManager:
         self._next_status_dump: float = 0.0
         self._next_filter_reload: float = 0.0
         self._filter_conf_mtime: Optional[float] = None
+        self._next_topic_start_at: float = 0.0
         self.status_path = self.config.runtime_status_path
 
     # ========== 核心循环 ==========
@@ -555,6 +567,11 @@ class AutoRunManager:
             task.status = "error"
 
     def _update_log_excerpt(self, task: TopicTask, max_bytes: int = 2000) -> None:
+        now = time.time()
+        interval = max(0.0, float(self.config.log_excerpt_interval_sec))
+        if interval and now - task.last_log_excerpt_ts < interval:
+            return
+
         if not task.log_path or not task.log_path.exists():
             task.log_excerpt = ""
             return
@@ -566,6 +583,7 @@ class AutoRunManager:
                 data = f.read().decode("utf-8", errors="ignore")
             lines = data.strip().splitlines()
             task.log_excerpt = "\n".join(lines[-5:])
+            task.last_log_excerpt_ts = now
         except OSError as exc:  # pragma: no cover - 文件访问异常
             task.log_excerpt = f"<log read error: {exc}>"
 
@@ -597,6 +615,9 @@ class AutoRunManager:
             self.pending_topics
             and running < max(1, int(self.config.max_concurrent_tasks))
         ):
+            now = time.time()
+            if now < self._next_topic_start_at:
+                break
             topic_id = self.pending_topics.pop(0)
             if topic_id in self.tasks and self.tasks[topic_id].is_running():
                 continue
@@ -609,6 +630,10 @@ class AutoRunManager:
             if not started and topic_id not in self.pending_topics:
                 # 启动失败时重新入队，避免话题被遗忘
                 self.pending_topics.append(topic_id)
+            elif started:
+                self._next_topic_start_at = now + max(
+                    0.0, float(self.config.topic_start_cooldown_sec)
+                )
             running = sum(1 for t in self.tasks.values() if t.is_running())
 
     def _get_order_base_volume(self) -> Optional[float]:
